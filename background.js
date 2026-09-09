@@ -590,72 +590,222 @@ export async function commitKeywordResult(runId, resultItem, queueIndex, tabId, 
     return { committed: false, reason: latestState.status };
   }
 
-  // Final location integrity check at the exact moment of commit
-  if (jobSettings && jobSettings.useLocation) {
-    const integrity = await verifyLocationIntegrity({
+  const item = latestState.queue && latestState.queue[queueIndex];
+  const itemOriginalIndex = (item && item.originalIndex !== undefined) ? item.originalIndex : queueIndex;
+
+  // --------------------------------------------------------------------------
+  // PATH A: NON-LOCATION JOBS (useLocation === false)
+  // Direct normal commit without debugger overhead
+  // --------------------------------------------------------------------------
+  if (!jobSettings || !jobSettings.useLocation) {
+    const finalResultItem = {
+      ...resultItem,
+      originalIndex: itemOriginalIndex,
+      projectId: latestState.projectId || null
+    };
+
+    const updatedResults = [...(latestState.results || [])];
+    while (updatedResults.length <= itemOriginalIndex) {
+      updatedResults.push(null);
+    }
+    updatedResults[itemOriginalIndex] = finalResultItem;
+
+    const nextIndex = queueIndex + 1;
+    const isComplete = nextIndex >= (latestState.queue ? latestState.queue.length : 0);
+    const nextStatus = isComplete ? 'COMPLETED' : 'RUNNING';
+
+    const updatedState = await saveJobState({
+      results: updatedResults,
+      currentIndex: nextIndex,
+      status: nextStatus,
+      currentKeyword: null,
+      currentSerpOffset: 0,
+      checkedDepth: 0,
+      seenUrls: []
+    });
+
+    broadcastMessage({
+      action: 'PROGRESS_UPDATE',
+      state: updatedState
+    });
+
+    return { committed: true, isComplete, nextStatus, state: updatedState };
+  }
+
+  // --------------------------------------------------------------------------
+  // PATH B: LOCATION-REQUIRED JOBS (TWO-PHASE GUARDED COMMIT WITH ROLLBACK)
+  // --------------------------------------------------------------------------
+  const expectedTabId = tabId || latestState.searchTabId;
+
+  // PHASE 2 - STEP 1: Pre-write validation
+  const preIntegrity = await verifyLocationIntegrity({
+    runId,
+    tabId: expectedTabId,
+    jobSettings
+  });
+
+  if (!preIntegrity.valid) {
+    const errorMsg = 'Location override was lost before the ranking result could be verified. This keyword was not saved.';
+    await debugLog(`[LRC Commit Gate FAIL-CLOSED] Pre-write check failed: ${preIntegrity.reason}`);
+
+    const checkState = await getJobState();
+    if (checkState.runId === runId && checkState.status !== 'STOPPED' && checkState.status !== 'PAUSED') {
+      await saveJobState({
+        status: 'BLOCKED',
+        errorMessage: errorMsg,
+        lastError: errorMsg,
+        locationApplied: false,
+        locationState: LOCATION_STATES.FAILED,
+        locationTabId: null,
+        appliedLocation: null,
+        currentKeyword: null,
+        currentSerpOffset: 0,
+        checkedDepth: 0,
+        seenUrls: []
+      });
+      broadcastMessage({
+        action: 'JOB_BLOCKED',
+        message: errorMsg,
+        reason: preIntegrity.reason
+      });
+      broadcastMessage({
+        action: 'LOCATION_STATUS_UPDATE',
+        status: LOCATION_STATES.FAILED,
+        error: errorMsg
+      });
+    }
+
+    return { committed: false, reason: preIntegrity.reason || 'LOCATION_LOST' };
+  }
+
+  // PHASE 2 - STEP 2: Candidate Result Write (Phase 1 Commit)
+  // Generate unique commit token to track this specific candidate write
+  const commitToken = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+    ? crypto.randomUUID()
+    : 'tok_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+
+  const candidateItem = {
+    ...resultItem,
+    originalIndex: itemOriginalIndex,
+    projectId: latestState.projectId || null,
+    commitToken: commitToken,
+    commitRunId: runId
+  };
+
+  const preResults = [...(latestState.results || [])];
+  const candidateResults = [...preResults];
+  while (candidateResults.length <= itemOriginalIndex) {
+    candidateResults.push(null);
+  }
+  candidateResults[itemOriginalIndex] = candidateItem;
+
+  // Write candidate result to session storage, KEEPING currentIndex at previousIndex!
+  await saveJobState({
+    results: candidateResults,
+    currentIndex: queueIndex
+  });
+
+  // PHASE 2 - STEP 3: Post-write verification (Immediately re-check environment & integrity)
+  const postState = await getJobState();
+
+  let rollbackRequired = false;
+  let rollbackReason = null;
+
+  if (postState.runId !== runId) {
+    rollbackRequired = true;
+    rollbackReason = 'RUN_INVALIDATED';
+  } else if (postState.status === 'STOPPED') {
+    rollbackRequired = true;
+    rollbackReason = 'STOPPED';
+  } else if (postState.status === 'PAUSED') {
+    rollbackRequired = true;
+    rollbackReason = 'PAUSED';
+  } else if (postState.status === 'BLOCKED') {
+    rollbackRequired = true;
+    rollbackReason = 'BLOCKED';
+  } else if (postState.status !== 'RUNNING') {
+    rollbackRequired = true;
+    rollbackReason = postState.status;
+  } else {
+    // Run post-write location integrity check
+    const postIntegrity = await verifyLocationIntegrity({
       runId,
-      tabId,
+      tabId: expectedTabId,
       jobSettings
     });
 
-    if (!integrity.valid) {
-      const errorMsg = 'Location override was lost before the ranking result could be verified. This keyword was not saved.';
-      await debugLog(`[LRC Commit Gate FAIL-CLOSED] ${errorMsg} Reason: ${integrity.reason}`);
-
-      // Set BLOCKED state safely if not already stopped or paused
-      const checkState = await getJobState();
-      if (checkState.runId === runId && checkState.status !== 'STOPPED' && checkState.status !== 'PAUSED') {
-        await saveJobState({
-          status: 'BLOCKED',
-          errorMessage: errorMsg,
-          lastError: errorMsg,
-          locationApplied: false,
-          locationState: LOCATION_STATES.FAILED,
-          locationTabId: null,
-          appliedLocation: null,
-          currentKeyword: null,
-          currentSerpOffset: 0,
-          checkedDepth: 0,
-          seenUrls: []
-        });
-        broadcastMessage({
-          action: 'JOB_BLOCKED',
-          message: errorMsg,
-          reason: integrity.reason
-        });
-        broadcastMessage({
-          action: 'LOCATION_STATUS_UPDATE',
-          status: LOCATION_STATES.FAILED,
-          error: errorMsg
-        });
-      }
-
-      return { committed: false, reason: integrity.reason || 'LOCATION_LOST' };
+    if (!postIntegrity.valid) {
+      rollbackRequired = true;
+      rollbackReason = postIntegrity.reason || 'LOCATION_LOST';
     }
   }
 
-  // Safe to commit: update results and advance currentIndex
-  const item = latestState.queue[queueIndex];
-  const itemOriginalIndex = (item && item.originalIndex !== undefined) ? item.originalIndex : queueIndex;
+  // PHASE 2 - STEP 4: Handle Rollback if post-write verification failed
+  if (rollbackRequired) {
+    await debugLog(`[LRC Two-Phase Commit] Post-write verification failed (${rollbackReason}). Initiating targeted rollback for token ${commitToken}...`);
 
-  const finalResultItem = {
-    ...resultItem,
-    originalIndex: itemOriginalIndex,
-    projectId: latestState.projectId || null
-  };
+    const rollbackState = await getJobState();
+    const cleanedResults = [...(rollbackState.results || [])];
 
-  const updatedResults = [...(latestState.results || [])];
-  while (updatedResults.length <= itemOriginalIndex) {
-    updatedResults.push(null);
+    // Remove ONLY the result belonging to this specific candidate commitToken
+    if (cleanedResults[itemOriginalIndex] && cleanedResults[itemOriginalIndex].commitToken === commitToken) {
+      cleanedResults[itemOriginalIndex] = preResults[itemOriginalIndex] || null;
+    }
+
+    // Clean any trailing null items
+    while (cleanedResults.length > 0 && cleanedResults[cleanedResults.length - 1] === null) {
+      cleanedResults.pop();
+    }
+
+    // Determine final status respecting STOPPED and PAUSED priority
+    const finalStatus = (rollbackState.status === 'STOPPED' || rollbackState.status === 'PAUSED')
+      ? rollbackState.status
+      : 'BLOCKED';
+
+    const errorMsg = 'Location override was lost before the ranking result could be verified. This keyword was not saved.';
+    const rollbackUpdates = {
+      results: cleanedResults,
+      currentIndex: queueIndex,
+      status: finalStatus,
+      locationApplied: false,
+      locationState: LOCATION_STATES.FAILED,
+      locationTabId: null,
+      appliedLocation: null,
+      currentKeyword: null,
+      currentSerpOffset: 0,
+      checkedDepth: 0,
+      seenUrls: []
+    };
+
+    if (finalStatus === 'BLOCKED') {
+      rollbackUpdates.errorMessage = errorMsg;
+      rollbackUpdates.lastError = errorMsg;
+    }
+
+    await saveJobState(rollbackUpdates);
+
+    if (finalStatus === 'BLOCKED') {
+      broadcastMessage({
+        action: 'JOB_BLOCKED',
+        message: errorMsg,
+        reason: rollbackReason
+      });
+      broadcastMessage({
+        action: 'LOCATION_STATUS_UPDATE',
+        status: LOCATION_STATES.FAILED,
+        error: errorMsg
+      });
+    }
+
+    return { committed: false, reason: rollbackReason };
   }
-  updatedResults[itemOriginalIndex] = finalResultItem;
 
+  // PHASE 2 - STEP 5: Post-write verification PASSED -> Finalize commit and advance currentIndex
   const nextIndex = queueIndex + 1;
-  const isComplete = nextIndex >= latestState.queue.length;
+  const isComplete = nextIndex >= (postState.queue ? postState.queue.length : 0);
   const nextStatus = isComplete ? 'COMPLETED' : 'RUNNING';
 
-  const updatedState = await saveJobState({
-    results: updatedResults,
+  const finalizedState = await saveJobState({
     currentIndex: nextIndex,
     status: nextStatus,
     currentKeyword: null,
@@ -666,10 +816,12 @@ export async function commitKeywordResult(runId, resultItem, queueIndex, tabId, 
 
   broadcastMessage({
     action: 'PROGRESS_UPDATE',
-    state: updatedState
+    state: finalizedState
   });
 
-  return { committed: true, isComplete, nextStatus, state: updatedState };
+  await debugLog(`[LRC Two-Phase Commit] Successfully finalized commit for "${item ? item.keyword : itemOriginalIndex}". Index advanced to ${nextIndex}.`);
+
+  return { committed: true, isComplete, nextStatus, state: finalizedState };
 }
 
 // Test harness getters / setters for internal debugger state
