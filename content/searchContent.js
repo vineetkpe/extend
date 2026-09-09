@@ -89,7 +89,7 @@
       return false;
     }
 
-    if (request.action === 'EXTRACT_SERP') {
+    if (request.action === 'PARSE_SERP' || request.action === 'EXTRACT_SERP') {
       (async () => {
         try {
           // Check for CAPTCHA first
@@ -127,7 +127,8 @@
           const parserOutput = window.serpParser.extractOrganicResults(document, {
             debug: request.debug,
             keyword: request.keyword,
-            startOffset: request.startOffset
+            startOffset: request.startOffset,
+            checkedDepth: request.checkedDepth
           });
 
           sendResponse({

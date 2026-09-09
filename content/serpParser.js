@@ -383,14 +383,19 @@
       item.position = idx + 1;
     });
 
-    const checkedDepth = results.length;
+    const pageOrganicCount = results.length;
+    const finalCheckedDepth = (options.checkedDepth !== undefined && options.checkedDepth !== null)
+      ? options.checkedDepth
+      : pageOrganicCount;
 
     // Attach debug helper to window for manual console inspection if debug is true
     if (debug) {
       window.LOCAL_RANK_DEBUG = {
         keyword,
         startOffset,
-        checkedDepth,
+        checkedDepth: finalCheckedDepth,
+        pageOrganicCount,
+        parsedResults: results,
         results,
         debugInfo,
         timestamp: new Date().toISOString()
@@ -402,7 +407,7 @@
 
     return {
       results,
-      checkedDepth,
+      checkedDepth: pageOrganicCount,
       debugInfo
     };
   }

@@ -28,6 +28,8 @@ const DEFAULT_JOB_STATE = {
   currentKeyword: null,
   currentSerpOffset: 0,
   checkedDepth: 0,
+  seenUrls: [],
+  lastError: null,
   errorMessage: null,
   lastUpdated: null
 };
