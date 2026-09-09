@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Local Rank Checker",
+  "version": "1.0.0",
+  "description": "Automate manual SEO keyword ranking on Google for weekly agency workflows.",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.google.com/*",
+    "https://www.google.co.uk/*",
+    "https://www.google.co.in/*",
+    "https://www.google.com.au/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.google.com/search*",
+        "https://www.google.co.uk/search*",
+        "https://www.google.co.in/search*",
+        "https://www.google.com.au/search*"
+      ],
+      "js": [
+        "content/serpParser.js",
+        "content/searchContent.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

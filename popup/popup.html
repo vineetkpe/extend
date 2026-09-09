@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local Rank Checker</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <h1>LOCAL RANK CHECKER</h1>
+        <span class="version-tag">v1.0 Local</span>
+      </div>
+      <div class="header-right">
+        <span id="statusBadge" class="status-badge status-idle">IDLE</span>
+      </div>
+    </header>
+
+    <!-- Alert / Interruption Banner -->
+    <div id="alertBanner" class="alert-banner hidden">
+      <span id="alertMessage">Google interrupted rank checking. The job has been paused.</span>
+    </div>
+
+    <!-- Keyword Data Section -->
+    <section class="card section-keyword-data">
+      <div class="section-title-bar">
+        <h2>Keyword Data</h2>
+        <span class="helper-text">Excel copy-paste (TSV) or CSV supported</span>
+      </div>
+      <textarea
+        id="keywordInput"
+        placeholder="keyword&#9;target_url&#9;previous_position&#10;dentist london&#9;https://example.com/dentist&#9;5&#10;emergency dentist london&#9;https://example.com/emergency&#9;8&#10;teeth whitening london&#9;https://example.com/whitening&#9;12"
+        rows="6"
+        spellcheck="false"
+      ></textarea>
+      <div id="validationBox" class="validation-box hidden"></div>
+    </section>
+
+    <!-- Search Settings -->
+    <section class="card section-settings">
+      <h2>Search Settings</h2>
+      <div class="settings-grid">
+        <div class="form-group">
+          <label for="googleDomain">Google Domain</label>
+          <select id="googleDomain">
+            <option value="google.com" selected>google.com</option>
+            <option value="google.co.uk">google.co.uk</option>
+            <option value="google.co.in">google.co.in</option>
+            <option value="google.com.au">google.com.au</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="delaySeconds">Delay Between Searches (sec)</label>
+          <input type="number" id="delaySeconds" min="5" max="60" value="8">
+        </div>
+      </div>
+
+      <!-- Location Simulation Placeholders (Milestone 2) -->
+      <div class="location-container">
+        <div class="location-header">
+          <label class="section-sublabel">Location Simulation</label>
+          <span class="milestone-note">Location simulation will be added in Milestone 2.</span>
+        </div>
+        <div class="settings-grid">
+          <div class="form-group">
+            <label for="latitude">Latitude</label>
+            <input type="text" id="latitude" placeholder="e.g. 51.5074" disabled>
+          </div>
+          <div class="form-group">
+            <label for="longitude">Longitude</label>
+            <input type="text" id="longitude" placeholder="e.g. -0.1278" disabled>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Controls -->
+    <section class="card-no-padding section-controls">
+      <div class="button-group">
+        <button id="btnStart" class="btn btn-primary">START</button>
+        <button id="btnPause" class="btn btn-secondary" disabled>PAUSE</button>
+        <button id="btnResume" class="btn btn-secondary hidden">RESUME</button>
+        <button id="btnStop" class="btn btn-danger" disabled>STOP</button>
+        <button id="btnClear" class="btn btn-outline">CLEAR</button>
+      </div>
+    </section>
+
+    <!-- Progress Section -->
+    <section id="progressSection" class="card section-progress hidden">
+      <div class="progress-info">
+        <span id="progressText">Checking keyword 1 of 5</span>
+        <span id="progressPercent">20%</span>
+      </div>
+      <div class="progress-bar-container">
+        <div id="progressBar" class="progress-bar-fill" style="width: 0%;"></div>
+      </div>
+    </section>
+
+    <!-- Results Section -->
+    <section class="card section-results">
+      <div class="results-header">
+        <div class="results-title-group">
+          <h2>Results</h2>
+          <span id="resultsCount" class="results-count">0 checked</span>
+        </div>
+        <div class="export-actions">
+          <button id="btnCopy" class="btn btn-sm btn-outline">COPY RESULTS</button>
+          <button id="btnDownloadCsv" class="btn btn-sm btn-outline">DOWNLOAD CSV</button>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table id="resultsTable">
+          <thead>
+            <tr>
+              <th>Keyword</th>
+              <th>Target URL</th>
+              <th class="text-center">Previous</th>
+              <th class="text-center">Current</th>
+              <th class="text-center">Change</th>
+              <th>Match</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="resultsTableBody">
+            <tr class="empty-row">
+              <td colspan="7" class="text-center">No ranking results yet. Paste keywords and click START.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast hidden">Copied to clipboard!</div>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
