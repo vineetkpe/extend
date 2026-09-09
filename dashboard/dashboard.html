@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local Rank Checker — Client & Keyword Dashboard</title>
+  <link rel="stylesheet" href="dashboard.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Navigation Bar -->
+    <header class="top-nav">
+      <div class="nav-brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>Local Rank Checker <span class="badge-pro">PRO DASHBOARD</span></h1>
+          <p class="brand-subtitle">Milestone 3 — 20–80 Keyword Batches & Local Projects</p>
+        </div>
+      </div>
+
+      <!-- Project Selector & Actions -->
+      <div class="project-toolbar">
+        <div class="project-selector-wrapper">
+          <label for="project-select" class="selector-label">PROJECT:</label>
+          <select id="project-select" class="project-select" title="Switch active client project">
+            <!-- Dynamically populated -->
+          </select>
+        </div>
+
+        <div class="project-btn-group">
+          <button id="btn-new-project" class="btn btn-secondary btn-sm" title="Create a new client project">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            New Project
+          </button>
+          <button id="btn-edit-project" class="btn btn-secondary btn-sm" title="Edit current project settings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+            Edit
+          </button>
+          <button id="btn-export-project" class="btn btn-secondary btn-sm" title="Export project and keywords as JSON">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            Export JSON
+          </button>
+          <button id="btn-import-project" class="btn btn-secondary btn-sm" title="Import project from JSON file">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+            Import JSON
+          </button>
+          <button id="btn-delete-project" class="btn btn-danger-outline btn-sm" title="Delete current project">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Grid -->
+    <main class="dashboard-main">
+      <!-- Top Grid: Project Setup & Location Simulation -->
+      <section class="config-grid">
+        <!-- Card 1: Client Settings & Geolocation Override -->
+        <div class="card config-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="card-icon">📍</span>
+              <h3>Client Geolocation Simulation</h3>
+            </div>
+            <span id="location-status-badge" class="badge badge-not-configured">LOCATION: NOT CONFIGURED</span>
+          </div>
+          <div class="card-body">
+            <div class="form-check-group">
+              <label class="switch">
+                <input type="checkbox" id="use-location-toggle">
+                <span class="slider round"></span>
+              </label>
+              <span class="toggle-label">Enable Browser Geolocation Simulation (CDP Override)</span>
+            </div>
+
+            <div class="location-fields-grid" id="location-fields-container">
+              <div class="form-group">
+                <label for="loc-name">Location Label / City</label>
+                <input type="text" id="loc-name" placeholder="e.g. New York, NY or London, UK">
+              </div>
+              <div class="form-row">
+                <div class="form-group col-5">
+                  <label for="loc-lat">Latitude (-90 to +90)</label>
+                  <input type="text" id="loc-lat" placeholder="40.7128">
+                </div>
+                <div class="form-group col-5">
+                  <label for="loc-lon">Longitude (-180 to +180)</label>
+                  <input type="text" id="loc-lon" placeholder="-74.0060">
+                </div>
+                <div class="form-group col-2">
+                  <label for="loc-acc">Acc (m)</label>
+                  <input type="number" id="loc-acc" value="20" min="1" max="1000">
+                </div>
+              </div>
+            </div>
+
+            <div class="btn-cluster">
+              <button id="btn-apply-location" class="btn btn-primary btn-sm">Configure / Apply Location</button>
+              <button id="btn-test-location" class="btn btn-secondary btn-sm">Test Location Override</button>
+              <button id="btn-clear-location" class="btn btn-outline btn-sm">Reset Location</button>
+            </div>
+            <div id="location-msg" class="inline-msg"></div>
+          </div>
+        </div>
+
+        <!-- Card 2: Google Settings & Execution Parameters -->
+        <div class="card config-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="card-icon">⚙️</span>
+              <h3>Execution & Search Parameters</h3>
+            </div>
+            <span id="job-status-badge" class="badge badge-idle">STATUS: IDLE</span>
+          </div>
+          <div class="card-body">
+            <div class="form-row">
+              <div class="form-group col-6">
+                <label for="google-domain">Google Domain</label>
+                <select id="google-domain">
+                  <option value="google.com">google.com (United States / Global)</option>
+                  <option value="google.co.uk">google.co.uk (United Kingdom)</option>
+                  <option value="google.ca">google.ca (Canada)</option>
+                  <option value="google.com.au">google.com.au (Australia)</option>
+                  <option value="google.co.in">google.co.in (India)</option>
+                  <option value="google.de">google.de (Germany)</option>
+                  <option value="google.fr">google.fr (France)</option>
+                  <option value="google.es">google.es (Spain)</option>
+                  <option value="google.it">google.it (Italy)</option>
+                  <option value="google.co.nz">google.co.nz (New Zealand)</option>
+                  <option value="google.ie">google.ie (Ireland)</option>
+                  <option value="google.com.sg">google.com.sg (Singapore)</option>
+                  <option value="google.com.mx">google.com.mx (Mexico)</option>
+                  <option value="google.com.br">google.com.br (Brazil)</option>
+                </select>
+              </div>
+              <div class="form-group col-3">
+                <label for="max-depth">Max Rank Depth</label>
+                <select id="max-depth">
+                  <option value="10">Top 10 (Page 1)</option>
+                  <option value="20">Top 20 (Page 1–2)</option>
+                  <option value="30">Top 30 (Page 1–3)</option>
+                  <option value="50" selected>Top 50 (Page 1–5)</option>
+                  <option value="100">Top 100 (Page 1–10)</option>
+                </select>
+              </div>
+              <div class="form-group col-3">
+                <label for="delay-seconds">Delay Between KW</label>
+                <input type="number" id="delay-seconds" min="5" max="60" value="8">
+              </div>
+            </div>
+
+            <div class="controls-cluster">
+              <button id="btn-start" class="btn btn-success">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                START RANK CHECK
+              </button>
+              <button id="btn-pause" class="btn btn-warning" style="display:none;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                PAUSE
+              </button>
+              <button id="btn-resume" class="btn btn-success" style="display:none;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                RESUME
+              </button>
+              <button id="btn-stop" class="btn btn-danger" style="display:none;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16"></rect></svg>
+                STOP
+              </button>
+              <button id="btn-clear" class="btn btn-secondary btn-sm">Clear Results</button>
+            </div>
+            <div id="job-banner-msg" class="banner-msg" style="display:none;"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Progress Card (visible during or after run) -->
+      <section class="card progress-card" id="progress-card">
+        <div class="progress-header">
+          <div class="progress-details">
+            <span class="active-project-tag" id="prog-project-name">Project: Default Client</span>
+            <h4 id="prog-fraction">0 / 0 Keywords Checked (0%)</h4>
+            <div class="current-activity" id="prog-activity">Ready to start.</div>
+          </div>
+          <div class="stats-counters">
+            <div class="stat-box">
+              <span class="stat-val" id="stat-total">0</span>
+              <span class="stat-lbl">Total</span>
+            </div>
+            <div class="stat-box stat-success">
+              <span class="stat-val" id="stat-found">0</span>
+              <span class="stat-lbl">Found</span>
+            </div>
+            <div class="stat-box stat-notfound">
+              <span class="stat-val" id="stat-notfound">0</span>
+              <span class="stat-lbl">Not Found</span>
+            </div>
+            <div class="stat-box stat-error">
+              <span class="stat-val" id="stat-error">0</span>
+              <span class="stat-lbl">Errors</span>
+            </div>
+          </div>
+        </div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progress-bar-fill" style="width: 0%;"></div>
+        </div>
+      </section>
+
+      <!-- Main Work Area: Tabs for Keyword Input & Results Table -->
+      <section class="card work-card">
+        <div class="tab-nav">
+          <button class="tab-btn active" data-tab="tab-results">Live Results Table (<span id="results-count-badge">0</span>)</button>
+          <button class="tab-btn" data-tab="tab-keywords">Keyword Queue (20–80 Rows) (<span id="keywords-count-badge">0</span>)</button>
+          <button class="tab-btn" data-tab="tab-snapshots">Weekly Snapshots (<span id="snapshots-count-badge">0</span>)</button>
+        </div>
+
+        <!-- TAB 1: Live Results Table -->
+        <div class="tab-pane active" id="tab-results">
+          <div class="table-actions-toolbar">
+            <div class="action-buttons-left">
+              <button id="btn-copy-positions" class="btn btn-primary" title="Copy exact single-column TSV in original row order for direct Excel paste">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                COPY CURRENT POSITIONS ONLY
+              </button>
+              <button id="btn-copy-all" class="btn btn-secondary btn-sm" title="Copy full table as TSV">
+                Copy Full TSV
+              </button>
+              <button id="btn-download-csv" class="btn btn-secondary btn-sm" title="Download formatted CSV report">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                Download CSV
+              </button>
+              <button id="btn-retry-failed" class="btn btn-warning-outline btn-sm" title="Re-check only keywords with errors">
+                Retry Failed
+              </button>
+            </div>
+            <div class="action-buttons-right">
+              <button id="btn-use-as-previous" class="btn btn-accent btn-sm" title="Set current rankings as the new baseline previous positions">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                USE CURRENT AS PREVIOUS
+              </button>
+            </div>
+          </div>
+
+          <div class="table-wrapper">
+            <table class="results-table" id="results-table">
+              <thead>
+                <tr>
+                  <th style="width: 45px;">#</th>
+                  <th>Keyword</th>
+                  <th>Target URL</th>
+                  <th style="width: 85px;">Previous</th>
+                  <th style="width: 85px;">Current</th>
+                  <th style="width: 75px;">Change</th>
+                  <th style="width: 140px;">Status / Depth</th>
+                  <th>Found URL / Cannibalization Notice</th>
+                </tr>
+              </thead>
+              <tbody id="results-tbody">
+                <tr>
+                  <td colspan="8" class="empty-state">No rank checks run yet. Enter keywords in the "Keyword Queue" tab and click "START RANK CHECK".</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- TAB 2: Keyword Input Area -->
+        <div class="tab-pane" id="tab-keywords">
+          <div class="keywords-helper-header">
+            <div class="helper-text">
+              <h4>20–80 Keyword Batch Management</h4>
+              <p>Paste lines from Excel/Google Sheets. Format: <code>Keyword [TAB] Target URL [TAB] Previous Position (optional)</code></p>
+            </div>
+            <div class="helper-actions">
+              <button id="btn-load-sample" class="btn btn-secondary btn-sm">Load 25 Sample Rows</button>
+              <button id="btn-save-keywords" class="btn btn-primary btn-sm">Save Keywords to Project</button>
+            </div>
+          </div>
+          <div class="textarea-wrapper">
+            <textarea id="keywords-textarea" rows="18" placeholder="dentist near me&#9;https://example.com/services&#9;5&#10;emergency dentist nyc&#9;https://example.com/emergency&#9;12&#10;teeth whitening&#9;https://example.com/cosmetic&#9;"></textarea>
+          </div>
+          <div class="keywords-footer">
+            <span id="keyword-count-label">0 keywords detected</span>
+            <span class="format-hint">Tab-separated or comma-separated supported. Preserves exact line ordering.</span>
+          </div>
+        </div>
+
+        <!-- TAB 3: Snapshot History -->
+        <div class="tab-pane" id="tab-snapshots">
+          <div class="snapshot-header">
+            <h4>Weekly Snapshot History (Up to 12 Local Snapshots)</h4>
+            <p>Every completed rank check automatically saves a permanent local snapshot for historical reporting.</p>
+          </div>
+          <div class="snapshots-list" id="snapshots-list">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Modals -->
+    <!-- 1. Create/Edit Project Modal -->
+    <div class="modal-overlay" id="project-modal" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="modal-project-title">New Client Project</h3>
+          <button class="modal-close" id="btn-close-project-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="modal-project-name">Project / Client Name *</label>
+            <input type="text" id="modal-project-name" placeholder="e.g. Acme Dental Manhattan">
+          </div>
+          <div class="form-group">
+            <label for="modal-project-domain">Default Client Domain</label>
+            <input type="text" id="modal-project-domain" placeholder="e.g. acmedental.com">
+          </div>
+          <div class="form-group">
+            <label for="modal-project-google">Google Search Domain</label>
+            <select id="modal-project-google">
+              <option value="google.com">google.com (United States / Global)</option>
+              <option value="google.co.uk">google.co.uk (United Kingdom)</option>
+              <option value="google.ca">google.ca (Canada)</option>
+              <option value="google.com.au">google.com.au (Australia)</option>
+              <option value="google.co.in">google.co.in (India)</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <div class="form-group col-6">
+              <label for="modal-project-delay">Default Delay (sec)</label>
+              <input type="number" id="modal-project-delay" value="8" min="5" max="60">
+            </div>
+            <div class="form-group col-6">
+              <label for="modal-project-depth">Default Max Depth</label>
+              <select id="modal-project-depth">
+                <option value="20">Top 20</option>
+                <option value="50" selected>Top 50</option>
+                <option value="100">Top 100</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btn-cancel-project-modal">Cancel</button>
+          <button class="btn btn-primary" id="btn-save-project-modal">Save Project</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. Confirmation Modal (Delete / Use Current As Previous) -->
+    <div class="modal-overlay" id="confirm-modal" style="display:none;">
+      <div class="modal-card modal-sm">
+        <div class="modal-header">
+          <h3 id="confirm-modal-title">Confirm Action</h3>
+          <button class="modal-close" id="btn-close-confirm-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p id="confirm-modal-message">Are you sure you want to proceed?</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btn-cancel-confirm">Cancel</button>
+          <button class="btn btn-danger" id="btn-accept-confirm">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Import JSON Modal -->
+    <div class="modal-overlay" id="import-modal" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Import Project from JSON</h3>
+          <button class="modal-close" id="btn-close-import-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="import-json-file">Select Project JSON File</label>
+            <input type="file" id="import-json-file" accept=".json,application/json">
+          </div>
+          <div class="form-group">
+            <label for="import-json-text">Or Paste JSON Data</label>
+            <textarea id="import-json-text" rows="8" placeholder="Paste exported project JSON here..."></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btn-cancel-import-modal">Cancel</button>
+          <button class="btn btn-primary" id="btn-submit-import-modal">Import Project</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+  </div>
+
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>

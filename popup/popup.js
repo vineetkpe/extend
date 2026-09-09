@@ -5,9 +5,10 @@
  */
 
 import { parseInputRows } from '../utils/parser.js';
-import { exportToTsv, exportToCsv } from '../utils/exporter.js';
+import { exportToTsv, exportToCsv, exportToCurrentPositionsOnly, copyToClipboard } from '../utils/exporter.js';
 import { getInputText, saveInputText } from '../utils/storage.js';
 import { validateCoordinates } from '../utils/locationValidator.js';
+import { getProjects, getActiveProject, setActiveProjectId } from '../utils/projectManager.js';
 
 // DOM Elements
 const statusBadge = document.getElementById('statusBadge');
@@ -15,6 +16,11 @@ const alertBanner = document.getElementById('alertBanner');
 const alertMessage = document.getElementById('alertMessage');
 const keywordInput = document.getElementById('keywordInput');
 const validationBox = document.getElementById('validationBox');
+
+// Dashboard & Project Switcher Elements (Milestone 3)
+const popupProjectSelect = document.getElementById('popupProjectSelect');
+const btnOpenDashboard = document.getElementById('btnOpenDashboard');
+const btnCopyPositionsOnly = document.getElementById('btnCopyPositionsOnly');
 
 const googleDomainSelect = document.getElementById('googleDomain');
 const maxPositionSelect = document.getElementById('maxPosition');
@@ -80,11 +86,11 @@ function getTodayDateStr() {
  * @param {object|null} details 
  * @param {boolean} needsReapply 
  */
-function renderLocationStatus(isApplied = false, details = null, needsReapply = false) {
+function renderLocationStatus(isApplied = false, details = null, needsReapply = false, isConfigured = false, isFailed = false) {
   if (!useLocationCheckbox || !locationStatusIndicator) return;
 
   if (!useLocationCheckbox.checked) {
-    locationStatusIndicator.textContent = 'LOCATION: NOT SET';
+    locationStatusIndicator.textContent = 'LOCATION: NOT CONFIGURED';
     locationStatusIndicator.className = 'location-status-badge status-not-set';
     if (locationFieldsGrid) locationFieldsGrid.classList.add('disabled-grid');
     if (btnApplyLocation) btnApplyLocation.disabled = true;
@@ -99,14 +105,20 @@ function renderLocationStatus(isApplied = false, details = null, needsReapply = 
   if (btnTestLocation) btnTestLocation.disabled = false;
   if (btnResetLocation) btnResetLocation.disabled = false;
 
-  if (needsReapply) {
+  if (isFailed) {
+    locationStatusIndicator.textContent = 'LOCATION: FAILED';
+    locationStatusIndicator.className = 'location-status-badge status-error';
+  } else if (needsReapply) {
     locationStatusIndicator.textContent = 'LOCATION NEEDS REAPPLY';
     locationStatusIndicator.className = 'location-status-badge status-warning';
   } else if (isApplied && details && details.latitude !== undefined && details.longitude !== undefined) {
     locationStatusIndicator.textContent = `LOCATION: ACTIVE (${details.latitude}, ${details.longitude})`;
     locationStatusIndicator.className = 'location-status-badge status-active';
+  } else if (isConfigured || (details && details.latitude !== undefined)) {
+    locationStatusIndicator.textContent = 'LOCATION: CONFIGURED — WILL APPLY WHEN RANK CHECK STARTS';
+    locationStatusIndicator.className = 'location-status-badge status-warning';
   } else {
-    locationStatusIndicator.textContent = 'LOCATION: NOT SET';
+    locationStatusIndicator.textContent = 'LOCATION: NOT CONFIGURED';
     locationStatusIndicator.className = 'location-status-badge status-not-set';
   }
 }
@@ -359,6 +371,22 @@ function validateInput() {
  * Initializes state by querying the background worker
  */
 async function initialize() {
+  // Populate Project Selector (Milestone 3)
+  try {
+    const projects = await getProjects();
+    const activeProj = await getActiveProject();
+    if (popupProjectSelect) {
+      popupProjectSelect.innerHTML = '';
+      Object.keys(projects).forEach(pId => {
+        const opt = document.createElement('option');
+        opt.value = pId;
+        opt.textContent = projects[pId].config?.projectName || projects[pId].projectName || 'Untitled Project';
+        if (pId === activeProj.id || pId === activeProj.config?.projectId) opt.selected = true;
+        popupProjectSelect.appendChild(opt);
+      });
+    }
+  } catch (_) {}
+
   // Load cached input text
   const savedText = await getInputText();
   if (savedText && !keywordInput.value) {
@@ -402,10 +430,57 @@ async function initialize() {
       if (state.queue && state.queue.length > 0) {
         renderProgress(state.currentIndex, state.queue.length);
       }
-      renderLocationStatus(Boolean(state.locationApplied), state.locationDetails, false);
+      renderLocationStatus(
+        Boolean(state.locationApplied),
+        state.locationDetails,
+        false,
+        Boolean(state.locationConfigured),
+        state.locationState === 'FAILED'
+      );
     } else {
       renderLocationStatus(false, null, false);
     }
+  });
+}
+
+// Project switcher listener in popup
+if (popupProjectSelect) {
+  popupProjectSelect.addEventListener('change', async (e) => {
+    if (currentStatus === 'RUNNING') {
+      showToast('Cannot switch project while a job is running!');
+      const activeProj = await getActiveProject();
+      e.target.value = activeProj.id;
+      return;
+    }
+    await setActiveProjectId(e.target.value);
+    const active = await getActiveProject();
+    if (active && active.keywords && active.keywords.length > 0) {
+      const lines = active.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
+      keywordInput.value = lines.join('\n');
+      saveInputText(keywordInput.value);
+    }
+    showToast(`Switched project: ${active.config?.projectName || 'Project'}`);
+    initialize();
+  });
+}
+
+// Open Dashboard button handler
+if (btnOpenDashboard) {
+  btnOpenDashboard.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard/dashboard.html') });
+  });
+}
+
+// Copy Positions Only handler
+if (btnCopyPositionsOnly) {
+  btnCopyPositionsOnly.addEventListener('click', () => {
+    if (!currentResults || currentResults.length === 0) {
+      showToast('No results to copy.');
+      return;
+    }
+    const tsvData = exportToCurrentPositionsOnly(currentResults);
+    copyToClipboard(tsvData);
+    showToast(`Copied ${currentResults.length} positions to clipboard!`);
   });
 }
 
@@ -720,11 +795,15 @@ chrome.runtime.onMessage.addListener((msg) => {
     renderStatus('BLOCKED', msg.message);
   } else if (msg.action === 'LOCATION_STATUS_UPDATE') {
     if (msg.status === 'ACTIVE') {
-      renderLocationStatus(true, msg.details, false);
+      renderLocationStatus(true, msg.details, false, false, false);
+    } else if (msg.status === 'CONFIGURED') {
+      renderLocationStatus(false, msg.details, false, true, false);
+    } else if (msg.status === 'FAILED') {
+      renderLocationStatus(false, null, false, false, true);
     } else if (msg.status === 'NEEDS_REAPPLY') {
-      renderLocationStatus(false, null, true);
-    } else if (msg.status === 'NOT_SET') {
-      renderLocationStatus(false, null, false);
+      renderLocationStatus(false, null, true, false, false);
+    } else {
+      renderLocationStatus(false, null, false, false, false);
     }
   }
 });

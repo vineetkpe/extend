@@ -24,6 +24,19 @@
       <span id="alertMessage">Google interrupted rank checking. The job has been paused.</span>
     </div>
 
+    <!-- Dashboard Launcher & Project Selector (Milestone 3) -->
+    <div class="card project-launcher-card" style="padding: 10px; margin-bottom: 10px; background: #1f2937; border: 1px solid #374151; border-radius: 6px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; font-weight: 700; color: #9ca3af;">PROJECT:</span>
+        <select id="popupProjectSelect" style="flex: 1; margin-left: 8px; font-size: 12px; padding: 4px 6px; background: #111827; color: #fff; border: 1px solid #4b5563; border-radius: 4px;">
+          <!-- Dynamically populated -->
+        </select>
+      </div>
+      <button id="btnOpenDashboard" type="button" class="btn btn-sm" style="width: 100%; background: #6366f1; color: #fff; font-weight: 600; padding: 7px; border: none; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;">
+        📊 OPEN FULL DASHBOARD (20–80 KW)
+      </button>
+    </div>
+
     <!-- Keyword Data Section -->
     <section class="card section-keyword-data">
       <div class="section-title-bar">
@@ -154,8 +167,9 @@
           <span id="resultsCount" class="results-count">0 checked</span>
         </div>
         <div class="export-actions">
-          <button id="btnCopy" class="btn btn-sm btn-outline">COPY RESULTS</button>
-          <button id="btnDownloadCsv" class="btn btn-sm btn-outline">DOWNLOAD CSV</button>
+          <button id="btnCopyPositionsOnly" class="btn btn-sm btn-primary-outline" title="Copy single column for Excel">POSITIONS</button>
+          <button id="btnCopy" class="btn btn-sm btn-outline">COPY ALL</button>
+          <button id="btnDownloadCsv" class="btn btn-sm btn-outline">CSV</button>
         </div>
       </div>
 

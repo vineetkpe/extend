@@ -4,11 +4,22 @@
  * keyword queues, settings, and ranking results.
  */
 
-const STORAGE_KEYS = {
+export const STORAGE_KEYS = {
   SETTINGS: 'lrc_settings',
   INPUT_TEXT: 'lrc_input_text',
   JOB_STATE: 'lrc_job_state',
-  RESULTS: 'lrc_results'
+  RESULTS: 'lrc_results',
+  PROJECTS: 'lrc_projects',
+  ACTIVE_PROJECT_ID: 'lrc_active_project_id'
+};
+
+export const LOCATION_STATES = {
+  NOT_CONFIGURED: 'NOT CONFIGURED',
+  CONFIGURED: 'CONFIGURED',
+  APPLYING: 'APPLYING',
+  ACTIVE: 'ACTIVE',
+  FAILED: 'FAILED',
+  NEEDS_REAPPLY: 'NEEDS REAPPLY'
 };
 
 const DEFAULT_SETTINGS = {
@@ -25,6 +36,7 @@ const DEFAULT_SETTINGS = {
 
 const DEFAULT_JOB_STATE = {
   runId: null,
+  activeProjectId: null,
   status: 'IDLE', // 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'BLOCKED' | 'COMPLETED'
   queue: [],
   currentIndex: 0,
@@ -37,8 +49,12 @@ const DEFAULT_JOB_STATE = {
   lastError: null,
   errorMessage: null,
   lastUpdated: null,
+  locationConfigured: false,
   locationApplied: false,
+  locationState: 'NOT CONFIGURED',
   locationTabId: null,
+  locationError: null,
+  appliedLocation: null,
   locationDetails: null
 };
 

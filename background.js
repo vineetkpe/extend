@@ -10,14 +10,20 @@
 
 import { matchUrl, MATCH_TYPES, normalizeUrl } from './utils/urlNormalizer.js';
 import { calculateChange } from './utils/parser.js';
-import { validateCoordinates } from './utils/locationValidator.js';
+import {
+  validateCoordinates,
+  createLocationFingerprint,
+  isLocationFingerprintMatch
+} from './utils/locationValidator.js';
 import {
   getSettings,
   saveSettings,
   getJobState,
   saveJobState,
-  resetJobState
+  resetJobState,
+  LOCATION_STATES
 } from './utils/storage.js';
+import { addProjectSnapshot } from './utils/projectManager.js';
 
 // Queue loop lifecycle management
 let activeQueuePromise = null;
@@ -25,6 +31,7 @@ let activeRunId = null;
 
 // Debugger session management for Geolocation CDP Override
 let activeDebuggerTabId = null;
+let activeAppliedLocation = null; // { latitude, longitude, accuracy, tabId }
 
 /**
  * Generates a unique execution session identifier
@@ -155,6 +162,8 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
     });
   } catch (_) {}
 
+  activeAppliedLocation = createLocationFingerprint(tabId, validation.latitude, validation.longitude, validation.accuracy);
+
   await debugLog({
     action: 'Emulation.setGeolocationOverride',
     tabId,
@@ -165,7 +174,9 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
   });
 
   await saveJobState({
+    locationConfigured: true,
     locationApplied: true,
+    locationState: LOCATION_STATES.ACTIVE,
     locationTabId: tabId,
     locationDetails: {
       latitude: validation.latitude,
@@ -177,7 +188,7 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
 
   broadcastMessage({
     action: 'LOCATION_STATUS_UPDATE',
-    status: 'ACTIVE',
+    status: LOCATION_STATES.ACTIVE,
     tabId,
     details: {
       latitude: validation.latitude,
@@ -206,16 +217,19 @@ async function clearGeolocationOverride(tabId = null) {
     } catch (_) {}
   }
   activeDebuggerTabId = null;
+  activeAppliedLocation = null;
 
   await saveJobState({
+    locationConfigured: false,
     locationApplied: false,
+    locationState: LOCATION_STATES.NOT_CONFIGURED,
     locationTabId: null,
     locationDetails: null
   });
 
   broadcastMessage({
     action: 'LOCATION_STATUS_UPDATE',
-    status: 'NOT_SET'
+    status: LOCATION_STATES.NOT_CONFIGURED
   });
 
   await debugLog('[LRC Debugger] Geolocation override cleared and debugger detached.');
@@ -226,28 +240,92 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   if (activeDebuggerTabId && activeDebuggerTabId === source.tabId) {
     debugLog(`[LRC Debugger] Detached from tab ${source.tabId}. Reason: ${reason}`);
     activeDebuggerTabId = null;
+    activeAppliedLocation = null;
     saveJobState({
       locationApplied: false,
+      locationState: LOCATION_STATES.FAILED,
       locationTabId: null
     });
     broadcastMessage({
       action: 'LOCATION_STATUS_UPDATE',
-      status: 'NEEDS_REAPPLY',
+      status: LOCATION_STATES.FAILED,
       reason: reason
     });
   }
 });
 
 /**
+ * Authoritative location override check and reapply.
+ * If useLocation is true, verifies that CDP override is applied with the exact current coordinates
+ * and active tabId. If not, applies or reapplies it.
+ * If override fails, returns { success: false, error: ... }.
+ * 
+ * @param {number} tabId
+ * @param {string} runId
+ * @param {object} settings
+ * @returns {Promise<{ success: boolean, applied: boolean, error?: string }>}
+ */
+async function ensureLocationApplied(tabId, runId, settings) {
+  if (!settings || !settings.useLocation) {
+    return { success: true, applied: false };
+  }
+
+  const coordsValidation = validateCoordinates(settings.latitude, settings.longitude, settings.accuracy);
+  if (!coordsValidation.valid) {
+    return {
+      success: false,
+      applied: false,
+      error: `Invalid coordinates: ${coordsValidation.error}`
+    };
+  }
+
+  // Check if already applied to this tab with identical coordinates
+  if (
+    activeDebuggerTabId === tabId &&
+    isLocationFingerprintMatch(activeAppliedLocation, tabId, coordsValidation.latitude, coordsValidation.longitude, coordsValidation.accuracy)
+  ) {
+    return { success: true, applied: true };
+  }
+
+  // Need to apply or reapply
+  try {
+    await debugLog(`[LRC] ensureLocationApplied: Applying override to tab ${tabId} for lat=${coordsValidation.latitude}, lon=${coordsValidation.longitude}...`);
+    await applyGeolocationOverride(tabId, {
+      latitude: coordsValidation.latitude,
+      longitude: coordsValidation.longitude,
+      accuracy: coordsValidation.accuracy,
+      locationName: settings.locationName || ''
+    }, settings.googleDomain || 'google.com');
+
+    return { success: true, applied: true };
+  } catch (err) {
+    console.error('[LRC] ensureLocationApplied failed:', err);
+    activeAppliedLocation = null;
+    await saveJobState({
+      locationApplied: false,
+      locationState: LOCATION_STATES.FAILED
+    });
+    broadcastMessage({
+      action: 'LOCATION_STATUS_UPDATE',
+      status: LOCATION_STATES.FAILED,
+      error: err.message
+    });
+    return {
+      success: false,
+      applied: false,
+      error: err.message || 'CDP Geolocation override failed.'
+    };
+  }
+}
+
+/**
  * Ensures a visible search tab exists, either reusing an existing one or creating a new tab.
- * If location simulation is enabled, guarantees geolocation override is applied/reapplied.
  * @param {number|null} existingTabId 
  * @param {object|null} settings
  * @returns {Promise<chrome.tabs.Tab>}
  */
 async function ensureSearchTab(existingTabId, settings = null) {
   let tab = null;
-  let isNewTab = false;
 
   if (existingTabId) {
     try {
@@ -262,27 +340,6 @@ async function ensureSearchTab(existingTabId, settings = null) {
       url: 'https://www.google.com',
       active: true
     });
-    isNewTab = true;
-  }
-
-  // If location simulation is enabled, ensure location override is active on this tab
-  if (settings && settings.useLocation) {
-    const coordsValidation = validateCoordinates(settings.latitude, settings.longitude, settings.accuracy);
-    if (coordsValidation.valid) {
-      if (isNewTab || activeDebuggerTabId !== tab.id) {
-        await debugLog(`[LRC] Applying/re-applying geolocation override to search tab ${tab.id}...`);
-        try {
-          await applyGeolocationOverride(tab.id, {
-            latitude: coordsValidation.latitude,
-            longitude: coordsValidation.longitude,
-            accuracy: coordsValidation.accuracy,
-            locationName: settings.locationName || ''
-          }, settings.googleDomain || 'google.com');
-        } catch (err) {
-          console.error('[LRC] Geolocation override application failed:', err);
-        }
-      }
-    }
   }
 
   return tab;
@@ -696,6 +753,15 @@ async function runQueueLoop(runId) {
         checkedDepth: 0,
         seenUrls: []
       });
+      const activeProjId = state.projectId || (await getSettings()).activeProjectId;
+      if (activeProjId && state.results && state.results.length > 0) {
+        try {
+          await addProjectSnapshot(activeProjId, state.results);
+          await debugLog(`[LRC] Auto-saved weekly snapshot for project ${activeProjId}`);
+        } catch (snapErr) {
+          console.error('[LRC] Failed to auto-save project snapshot:', snapErr);
+        }
+      }
       broadcastMessage({ action: 'PROGRESS_UPDATE', state: await getJobState() });
       await debugLog('[LRC] All keywords completed.');
       break;
@@ -706,7 +772,7 @@ async function runQueueLoop(runId) {
 
     await debugLog(`[LRC] Processing keyword ${index + 1}/${state.queue.length}: "${item.keyword}"`);
 
-    // Ensure visible search tab exists (with location simulation if enabled)
+    // Ensure visible search tab exists
     let tab;
     try {
       tab = await ensureSearchTab(state.searchTabId, settings);
@@ -718,6 +784,34 @@ async function runQueueLoop(runId) {
         errorMessage: 'Could not access Google search tab.'
       });
       break;
+    }
+
+    // FAIL-CLOSED GUARD: If location simulation is enabled, verify CDP override succeeded
+    if (settings && settings.useLocation) {
+      const locResult = await ensureLocationApplied(tab.id, runId, settings);
+      if (!locResult.success) {
+        const errorMsg = 'Location override failed. Rank checking has been stopped to prevent inaccurate local results.';
+        await debugLog(`[LRC FAIL-CLOSED] ${errorMsg} Error: ${locResult.error}`);
+        await saveJobState({
+          status: 'BLOCKED',
+          errorMessage: errorMsg,
+          currentKeyword: null,
+          currentSerpOffset: 0,
+          checkedDepth: 0,
+          seenUrls: []
+        });
+        broadcastMessage({
+          action: 'JOB_BLOCKED',
+          message: errorMsg,
+          error: locResult.error
+        });
+        broadcastMessage({
+          action: 'LOCATION_STATUS_UPDATE',
+          status: LOCATION_STATES.FAILED,
+          error: locResult.error
+        });
+        break; // HALT IMMEDIATELY. Do not navigate or run checkKeywordRanks!
+      }
     }
 
     // Check ranks across pagination
@@ -801,7 +895,18 @@ async function runQueueLoop(runId) {
     const wasPaused = (latestState.status === 'PAUSED' || latestState.status === 'BLOCKED');
 
     // Only commit a finished real result (or real technical failure)
-    const updatedResults = [...(latestState.results || []), resultItem];
+    const updatedResults = [...(latestState.results || [])];
+    const itemOriginalIndex = (item.originalIndex !== undefined) ? item.originalIndex : index;
+    const finalResultItem = {
+      ...resultItem,
+      originalIndex: itemOriginalIndex
+    };
+
+    while (updatedResults.length <= itemOriginalIndex) {
+      updatedResults.push(null);
+    }
+    updatedResults[itemOriginalIndex] = finalResultItem;
+
     const nextIndex = index + 1;
     const isComplete = nextIndex >= latestState.queue.length;
 
@@ -824,6 +929,18 @@ async function runQueueLoop(runId) {
       checkedDepth: 0,
       seenUrls: []
     });
+
+    if (isComplete && !wasPaused) {
+      const activeProjId = latestState.projectId || (await getSettings()).activeProjectId;
+      if (activeProjId) {
+        try {
+          await addProjectSnapshot(activeProjId, updatedResults);
+          await debugLog(`[LRC] Auto-saved weekly snapshot for project ${activeProjId}`);
+        } catch (snapErr) {
+          console.error('[LRC] Failed to auto-save project snapshot:', snapErr);
+        }
+      }
+    }
 
     broadcastMessage({
       action: 'PROGRESS_UPDATE',
@@ -923,7 +1040,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       if (request.action === 'START_JOB') {
-        const { queue, settings } = request;
+        const { queue, settings, projectId } = request;
         if (settings) {
           await saveSettings(settings);
         }
@@ -943,12 +1060,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         const runId = generateRunId();
 
+        const prefilledResults = (queue || []).map((item, idx) => ({
+          id: item.id || `kw_${idx}`,
+          originalIndex: idx,
+          keyword: item.keyword,
+          targetUrl: item.targetUrl,
+          previousPosition: item.previousPosition ?? null,
+          currentPosition: 'NOT CHECKED',
+          displayPosition: 'NOT CHECKED',
+          change: '—',
+          matchStatus: 'NOT_CHECKED',
+          status: 'NOT CHECKED',
+          checkedDepth: 0,
+          foundUrl: null,
+          error: null,
+          checkedAt: null
+        }));
+
         const state = await saveJobState({
           runId: runId,
           status: 'RUNNING',
-          queue: queue || [],
+          projectId: projectId || null,
+          queue: (queue || []).map((q, idx) => ({ ...q, originalIndex: idx })),
           currentIndex: 0,
-          results: [],
+          results: prefilledResults,
           currentKeyword: null,
           currentSerpOffset: 0,
           checkedDepth: 0,
@@ -957,6 +1092,62 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
 
         sendResponse({ success: true, state });
+        ensureQueueRunning(runId);
+        return;
+      }
+
+      if (request.action === 'RETRY_FAILED_JOB') {
+        const currentState = await getJobState();
+
+        if (!currentState.results || currentState.results.length === 0) {
+          sendResponse({ success: false, message: 'No results to retry.' });
+          return;
+        }
+
+        const failedItems = [];
+        const currentResults = [...currentState.results];
+
+        currentResults.forEach((res, idx) => {
+          if (res && (res.status === 'ERROR' || res.matchStatus === 'ERROR')) {
+            const origIdx = res.originalIndex !== undefined ? res.originalIndex : idx;
+            failedItems.push({
+              id: res.id || `kw_${origIdx}`,
+              originalIndex: origIdx,
+              keyword: res.keyword,
+              targetUrl: res.targetUrl,
+              previousPosition: res.previousPosition ?? null
+            });
+            currentResults[origIdx] = {
+              ...res,
+              status: 'NOT CHECKED',
+              currentPosition: 'NOT CHECKED',
+              displayPosition: 'NOT CHECKED',
+              change: '—',
+              error: null
+            };
+          }
+        });
+
+        if (failedItems.length === 0) {
+          sendResponse({ success: false, message: 'No failed keywords found to retry.' });
+          return;
+        }
+
+        const runId = generateRunId();
+        const state = await saveJobState({
+          runId: runId,
+          status: 'RUNNING',
+          queue: failedItems,
+          currentIndex: 0,
+          results: currentResults,
+          currentKeyword: null,
+          currentSerpOffset: 0,
+          checkedDepth: 0,
+          seenUrls: [],
+          errorMessage: null
+        });
+
+        sendResponse({ success: true, state, retryingCount: failedItems.length });
         ensureQueueRunning(runId);
         return;
       }
@@ -1051,18 +1242,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
               accuracy: validation.accuracy,
               locationName: loc.locationName || ''
             }, settings.googleDomain || 'google.com');
-            sendResponse({ success: true, applied: true, tabId: tab.id, details: validation });
+            sendResponse({
+              success: true,
+              applied: true,
+              tabId: tab.id,
+              details: validation,
+              message: `LOCATION: ACTIVE on tab ${tab.id}`
+            });
             return;
           } catch (err) {
             sendResponse({ success: false, error: err.message });
             return;
           }
         } else {
-          // Tab not created yet; save configured state so it will apply on START
+          // Tab not created yet; save configured state truthfully
           await saveJobState({
-            locationApplied: true,
+            locationConfigured: true,
+            locationApplied: false,
+            locationState: LOCATION_STATES.CONFIGURED,
             locationTabId: null,
             locationDetails: {
+              latitude: validation.latitude,
+              longitude: validation.longitude,
+              accuracy: validation.accuracy,
+              locationName: loc.locationName || ''
+            }
+          });
+          broadcastMessage({
+            action: 'LOCATION_STATUS_UPDATE',
+            status: LOCATION_STATES.CONFIGURED,
+            details: {
               latitude: validation.latitude,
               longitude: validation.longitude,
               accuracy: validation.accuracy,
@@ -1072,7 +1281,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           sendResponse({
             success: true,
             applied: false,
-            message: 'Location configured. Will attach to Google search tab upon start.'
+            configured: true,
+            message: 'LOCATION: CONFIGURED — WILL APPLY WHEN RANK CHECK STARTS'
           });
           return;
         }

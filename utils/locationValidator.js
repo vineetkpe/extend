@@ -1,4 +1,4 @@
-﻿/**
+/**
  * locationValidator.js
  * Validates latitude, longitude, and accuracy for browser geolocation simulation.
  */
@@ -55,4 +55,69 @@ export function validateCoordinates(lat, lon, accuracy = 20) {
     longitude: numLon,
     accuracy: numAcc
   };
+}
+
+/**
+ * Creates a comparable fingerprint for an applied location session.
+ * Accepts (tabId, lat, lon, accuracy) or (lat, lon, accuracy, tabId).
+ * @param {number|string} tabIdOrLat 
+ * @param {number|string} latOrLon 
+ * @param {number|string} lonOrAcc 
+ * @param {number|string|null} accOrTabId 
+ * @returns {object}
+ */
+export function createLocationFingerprint(tabIdOrLat, latOrLon, lonOrAcc, accOrTabId) {
+  let tabId, lat, lon, accuracy;
+  // If fourth param is tabId (large integer) and 1st param is coordinate
+  if (accOrTabId !== undefined && typeof accOrTabId === 'number' && accOrTabId > 90) {
+    lat = tabIdOrLat;
+    lon = latOrLon;
+    accuracy = lonOrAcc;
+    tabId = accOrTabId;
+  } else {
+    tabId = tabIdOrLat;
+    lat = latOrLon;
+    lon = lonOrAcc;
+    accuracy = accOrTabId;
+  }
+
+  return {
+    tabId: tabId ? Number(tabId) : null,
+    latitude: Number(lat),
+    longitude: Number(lon),
+    accuracy: Number(accuracy) || 20
+  };
+}
+
+/**
+ * Checks whether the current configured coordinates match the applied location fingerprint.
+ * Accepts (fingerprint, tabId, lat, lon, accuracy) or (fingerprint, lat, lon, accuracy, tabId).
+ * @param {object|null} fingerprint 
+ * @param {number|string} tabIdOrLat 
+ * @param {number|string} latOrLon 
+ * @param {number|string} lonOrAcc 
+ * @param {number|string|null} accOrTabId 
+ * @returns {boolean}
+ */
+export function isLocationFingerprintMatch(fingerprint, tabIdOrLat, latOrLon, lonOrAcc, accOrTabId) {
+  if (!fingerprint) return false;
+  let tabId, lat, lon, accuracy;
+  if (accOrTabId !== undefined && typeof accOrTabId === 'number' && accOrTabId > 90) {
+    lat = tabIdOrLat;
+    lon = latOrLon;
+    accuracy = lonOrAcc;
+    tabId = accOrTabId;
+  } else {
+    tabId = tabIdOrLat;
+    lat = latOrLon;
+    lon = lonOrAcc;
+    accuracy = accOrTabId;
+  }
+
+  return (
+    fingerprint.tabId === Number(tabId) &&
+    fingerprint.latitude === Number(lat) &&
+    fingerprint.longitude === Number(lon) &&
+    fingerprint.accuracy === (Number(accuracy) || 20)
+  );
 }

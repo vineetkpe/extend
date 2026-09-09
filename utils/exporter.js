@@ -127,3 +127,44 @@ export function exportToCsv(results) {
 
   return [headers.join(','), ...rows].join('\r\n');
 }
+
+/**
+ * Generates a single column of current positions in exact row order for pasting into existing Excel sheets.
+ * Exact rank: 4
+ * Not found: NOT FOUND
+ * Error: ERROR
+ * Not checked: NOT CHECKED
+ * @param {Array<object>} results 
+ * @returns {string}
+ */
+export function exportToCurrentPositionsOnly(results) {
+  if (!Array.isArray(results) || results.length === 0) {
+    return '';
+  }
+
+  return results.map(r => {
+    if (!r) return 'NOT CHECKED';
+    if (r.status === 'ERROR' || r.currentPosition === 'Error') return 'ERROR';
+    if (r.status === 'NOT CHECKED' || r.currentPosition === 'NOT CHECKED' || r.currentPosition === '—' || r.currentPosition === null || r.currentPosition === undefined) {
+      return 'NOT CHECKED';
+    }
+    if (typeof r.currentPosition === 'number' || (!isNaN(Number(r.currentPosition)) && r.currentPosition !== '')) {
+      return String(r.currentPosition);
+    }
+    return 'NOT FOUND';
+  }).join('\n');
+}
+
+/**
+ * Sanitizes a project name for use in filenames (e.g. "Prompt Optimizer" -> "prompt-optimizer").
+ * @param {string} name 
+ * @returns {string}
+ */
+export function sanitizeProjectFilename(name) {
+  if (!name) return 'project';
+  return String(name)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'project';
+}
