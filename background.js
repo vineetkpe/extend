@@ -18,8 +18,6 @@ import {
 import {
   getPreferences,
   savePreferences,
-  getSettings,
-  saveSettings,
   getRuntimeState,
   saveRuntimeState,
   getJobState,
@@ -28,11 +26,12 @@ import {
   clearSessionData,
   isSessionStorageAvailable,
   getSessionStorage,
+  requireSessionStorage,
   LOCATION_STATES,
   SESSION_STORAGE_UNAVAILABLE_ERROR,
   DEFAULT_JOB_SETTINGS
 } from './utils/storage.js';
-import { getProjects } from './utils/projectManager.js';
+import { getProjects, getActiveProject } from './utils/projectManager.js';
 
 // Queue loop lifecycle management
 let activeQueuePromise = null;
@@ -59,8 +58,8 @@ function generateRunId() {
  */
 async function debugLog(data) {
   try {
-    const settings = await getSettings();
-    if (settings && settings.debugMode) {
+    const prefs = await getPreferences();
+    if (prefs && prefs.debugMode) {
       if (typeof data === 'string') {
         console.log(`[LRC Debug] ${data}`);
       } else {
@@ -1094,19 +1093,48 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
-        const rawDomain = (settings && settings.googleDomain) || 'google.com';
-        const rawDelay = Math.max(5, parseInt(settings && settings.delaySeconds, 10) || 8);
-        const rawMaxDepth = Math.max(10, parseInt(settings && settings.maxPosition, 10) || 50);
-        const useLocation = Boolean(settings && settings.useLocation);
+        // 1. Load/receive selected project from session storage
+        let projectConfig = null;
+        if (projectId) {
+          try {
+            const projects = await getProjects();
+            if (projects && projects[projectId]) {
+              projectConfig = projects[projectId].config || projects[projectId];
+            }
+          } catch (_) {}
+        }
+        if (!projectConfig) {
+          try {
+            const active = await getActiveProject();
+            if (active) projectConfig = active.config || active;
+          } catch (_) {}
+        }
+
+        // Merge project config with explicit job request settings
+        const reqSettings = settings || {};
+        const rawDomain = reqSettings.googleDomain || projectConfig?.googleDomain || 'google.com';
+        const rawDelay = Math.max(5, parseInt(reqSettings.delaySeconds ?? projectConfig?.defaultDelaySeconds ?? 8, 10) || 8);
+        const rawMaxDepth = Math.max(10, parseInt(reqSettings.maxPosition ?? projectConfig?.defaultMaxDepth ?? 50, 10) || 50);
+        const useLocation = Boolean(reqSettings.useLocation !== undefined ? reqSettings.useLocation : projectConfig?.useLocation);
+
+        let rawLat = (reqSettings.latitude !== undefined && reqSettings.latitude !== '')
+          ? reqSettings.latitude
+          : (projectConfig?.latitude || '');
+        let rawLon = (reqSettings.longitude !== undefined && reqSettings.longitude !== '')
+          ? reqSettings.longitude
+          : (projectConfig?.longitude || '');
+        let rawAcc = reqSettings.accuracy !== undefined
+          ? reqSettings.accuracy
+          : (projectConfig?.accuracy ?? 20);
+        let locName = (reqSettings.locationName !== undefined ? reqSettings.locationName : projectConfig?.locationName) || '';
 
         let validatedLat = '';
         let validatedLon = '';
         let validatedAcc = 20;
-        let locName = (settings && settings.locationName) || '';
 
-        // Validate location coordinates if location simulation is enabled
+        // 2. Validate full project/job configuration
         if (useLocation) {
-          const locVal = validateCoordinates(settings.latitude, settings.longitude, settings.accuracy);
+          const locVal = validateCoordinates(rawLat, rawLon, rawAcc);
           if (!locVal.valid) {
             sendResponse({
               success: false,
@@ -1130,11 +1158,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           }
         }
 
+        // 3. Create complete immutable snapshot of active job settings
         const activeJobSettings = {
           googleDomain: rawDomain,
           delaySeconds: rawDelay,
           maxPosition: rawMaxDepth,
-          debugMode: Boolean(settings && settings.debugMode),
+          debugMode: Boolean(reqSettings.debugMode),
           useLocation: useLocation,
           latitude: validatedLat,
           longitude: validatedLon,
@@ -1142,7 +1171,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           locationName: locName
         };
 
-        // Save harmless general preferences to local storage (only whitelisted keys)
+        // 4. Save harmless general preferences to local storage (only whitelisted keys)
         await savePreferences({
           googleDomain: activeJobSettings.googleDomain,
           delaySeconds: activeJobSettings.delaySeconds,
@@ -1150,6 +1179,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           debugMode: activeJobSettings.debugMode
         });
 
+        // 5. Create unique runId
         const runId = generateRunId();
 
         const prefilledResults = (queue || []).map((item, idx) => ({
@@ -1170,6 +1200,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           checkedAt: null
         }));
 
+        // 6. Store COMPLETE active job settings in chrome.storage.session as part of runtimeState
         const state = await saveJobState({
           runId: runId,
           status: 'RUNNING',
@@ -1186,6 +1217,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           errorMessage: null
         });
 
+        // 7. Start queue using runtimeState.jobSettings
         sendResponse({ success: true, state });
         ensureQueueRunning(runId);
         return;
@@ -1417,8 +1449,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
-        const settings = await getSettings();
-        const domain = settings.googleDomain || 'google.com';
+        const prefs = await getPreferences();
+        const domain = prefs.googleDomain || 'google.com';
 
         let testTab = null;
         let createdTempTab = false;

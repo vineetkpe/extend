@@ -56,16 +56,19 @@ export function getSessionStorage() {
 }
 
 /**
- * Asserts session storage availability or throws a fail-closed privacy error.
+ * Requires chrome.storage.session to be available.
+ * Fails closed with a clear privacy error if unavailable.
  * @returns {chrome.storage.StorageArea}
  */
-export function assertSessionStorage() {
+export function requireSessionStorage() {
   const store = getSessionStorage();
   if (!store) {
     throw new Error(SESSION_STORAGE_UNAVAILABLE_ERROR);
   }
   return store;
 }
+
+export const assertSessionStorage = requireSessionStorage;
 
 /**
  * Returns local storage provider for non-client preferences.
@@ -273,6 +276,26 @@ export async function saveRuntimeState(stateUpdate) {
 // Aliases for compatibility
 export const getJobState = getRuntimeState;
 export const saveJobState = saveRuntimeState;
+
+/**
+ * Retrieves projects map directly from chrome.storage.session.
+ * @returns {Promise<Object<string, object>>}
+ */
+export async function getProjects() {
+  const store = requireSessionStorage();
+  const data = await store.get(STORAGE_KEYS.PROJECTS);
+  return (data && data[STORAGE_KEYS.PROJECTS]) || {};
+}
+
+/**
+ * Saves projects map directly to chrome.storage.session.
+ * @param {Object<string, object>} projects
+ * @returns {Promise<void>}
+ */
+export async function saveProjects(projects) {
+  const store = requireSessionStorage();
+  await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
+}
 
 /**
  * Resets the session job state to IDLE and clears results.

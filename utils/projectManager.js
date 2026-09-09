@@ -10,7 +10,7 @@
  * - Import parses JSON with prototype-pollution guards and strict schema/URL validation.
  */
 
-import { STORAGE_KEYS, getSessionStorage, assertSessionStorage, SESSION_STORAGE_UNAVAILABLE_ERROR } from './storage.js';
+import { STORAGE_KEYS, getSessionStorage, requireSessionStorage, SESSION_STORAGE_UNAVAILABLE_ERROR } from './storage.js';
 import { isValidUrlOrDomain } from './parser.js';
 import { validateCoordinates } from './locationValidator.js';
 
@@ -78,7 +78,7 @@ export function isSafeTargetUrl(urlStr) {
  * @returns {Promise<Object<string, object>>}
  */
 export async function getProjects() {
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
 
   const data = await store.get(STORAGE_KEYS.PROJECTS);
   let projects = data ? data[STORAGE_KEYS.PROJECTS] : null;
@@ -105,7 +105,7 @@ export async function getProjects() {
  * @returns {Promise<Object<string, object>>}
  */
 export async function saveProjects(projects) {
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
   await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
   return projects;
 }
@@ -115,7 +115,7 @@ export async function saveProjects(projects) {
  * @returns {Promise<string>}
  */
 export async function getActiveProjectId() {
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
   const data = await store.get(STORAGE_KEYS.ACTIVE_PROJECT_ID);
   return (data && data[STORAGE_KEYS.ACTIVE_PROJECT_ID]) || DEFAULT_PROJECT_ID;
 }
@@ -126,7 +126,7 @@ export async function getActiveProjectId() {
  * @returns {Promise<void>}
  */
 export async function setActiveProjectId(projectId) {
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
   await store.set({ [STORAGE_KEYS.ACTIVE_PROJECT_ID]: projectId });
 }
 
@@ -173,7 +173,7 @@ export async function getActiveProject() {
  * @returns {Promise<object>} created project
  */
 export async function createProject(projectData) {
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
   const projects = await getProjects();
   const projectId = 'proj_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
 
@@ -257,7 +257,7 @@ export async function getProjectById(projectId) {
 export async function saveProject(project) {
   const pId = project.id || project.projectId || project.config?.projectId;
   if (!pId) return;
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
   const projects = await getProjects();
   const existing = projects[pId] || { config: {}, keywords: [] };
 
@@ -310,7 +310,7 @@ export async function saveProject(project) {
  * @returns {Promise<object>} updated project
  */
 export async function updateProject(projectId, configUpdates) {
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
   const projects = await getProjects();
   if (!projects[projectId]) {
     throw new Error(`Project ${projectId} not found.`);
@@ -345,7 +345,7 @@ export async function updateProject(projectId, configUpdates) {
  * @returns {Promise<{ success: boolean, newActiveId?: string }>}
  */
 export async function deleteProject(projectId) {
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
   const projects = await getProjects();
   const keys = Object.keys(projects);
   if (keys.length <= 1) {
@@ -380,7 +380,7 @@ export async function getProjectKeywords(projectId) {
  * @returns {Promise<void>}
  */
 export async function saveProjectKeywords(projectId, keywordRows) {
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
   const projects = await getProjects();
   if (!projects[projectId]) return;
 
@@ -401,7 +401,7 @@ export const setProjectKeywords = saveProjectKeywords;
  * @returns {Promise<Array<object>>} updated keywords
  */
 export async function promoteCurrentToPrevious(projectId, currentResults = []) {
-  const store = assertSessionStorage();
+  const store = requireSessionStorage();
   const projects = await getProjects();
   if (!projects[projectId]) return [];
 
@@ -505,7 +505,7 @@ export async function exportProjectJson(projectId) {
  * @returns {Promise<object>} imported project
  */
 export async function importProjectJson(jsonString, customName = '') {
-  assertSessionStorage();
+  requireSessionStorage();
   if (typeof jsonString !== 'string' || !jsonString.trim()) {
     throw new Error('Project JSON string is empty.');
   }
