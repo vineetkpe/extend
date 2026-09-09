@@ -16,7 +16,9 @@ const keywordInput = document.getElementById('keywordInput');
 const validationBox = document.getElementById('validationBox');
 
 const googleDomainSelect = document.getElementById('googleDomain');
+const maxPositionSelect = document.getElementById('maxPosition');
 const delaySecondsInput = document.getElementById('delaySeconds');
+const debugModeCheckbox = document.getElementById('debugMode');
 
 const btnStart = document.getElementById('btnStart');
 const btnPause = document.getElementById('btnPause');
@@ -66,7 +68,7 @@ function renderStatus(status, errorMessage = null) {
   statusBadge.textContent = currentStatus;
   statusBadge.className = `status-badge status-${currentStatus.toLowerCase()}`;
 
-  // Reset alert banner
+  // Alert banner for Google interruption / CAPTCHA
   if (status === 'BLOCKED') {
     alertBanner.classList.remove('hidden');
     alertMessage.textContent = errorMessage || 'Google interrupted rank checking. The job has been paused.';
@@ -74,7 +76,7 @@ function renderStatus(status, errorMessage = null) {
     alertBanner.classList.add('hidden');
   }
 
-  // Button states
+  // Button & Input states
   switch (currentStatus) {
     case 'RUNNING':
       btnStart.disabled = true;
@@ -85,7 +87,9 @@ function renderStatus(status, errorMessage = null) {
       btnClear.disabled = true;
       keywordInput.disabled = true;
       googleDomainSelect.disabled = true;
+      if (maxPositionSelect) maxPositionSelect.disabled = true;
       delaySecondsInput.disabled = true;
+      if (debugModeCheckbox) debugModeCheckbox.disabled = true;
       break;
 
     case 'PAUSED':
@@ -98,7 +102,9 @@ function renderStatus(status, errorMessage = null) {
       btnClear.disabled = false;
       keywordInput.disabled = false;
       googleDomainSelect.disabled = false;
+      if (maxPositionSelect) maxPositionSelect.disabled = false;
       delaySecondsInput.disabled = false;
+      if (debugModeCheckbox) debugModeCheckbox.disabled = false;
       break;
 
     case 'STOPPED':
@@ -113,13 +119,15 @@ function renderStatus(status, errorMessage = null) {
       btnClear.disabled = false;
       keywordInput.disabled = false;
       googleDomainSelect.disabled = false;
+      if (maxPositionSelect) maxPositionSelect.disabled = false;
       delaySecondsInput.disabled = false;
+      if (debugModeCheckbox) debugModeCheckbox.disabled = false;
       break;
   }
 }
 
 /**
- * Renders the results table from results array
+ * Renders the results table with honest depth and clear cannibalization status
  */
 function renderResultsTable(results) {
   currentResults = results || [];
@@ -143,46 +151,53 @@ function renderResultsTable(results) {
       changeClass = 'change-down';
     }
 
-    // Determine match badge class
     let matchBadgeClass = 'badge-not-found';
-    let matchLabel = r.matchStatus || r.status || 'NOT FOUND';
+    let matchLabel = 'NOT FOUND';
+    let statusLabel = 'NOT FOUND';
+    let currentCellHtml = '';
+    let subInfo = '';
 
     if (r.matchStatus === 'EXACT PAGE') {
       matchBadgeClass = 'badge-exact';
       matchLabel = 'EXACT PAGE';
+      statusLabel = 'EXACT PAGE';
+      currentCellHtml = `<strong>${escapeHtml(String(r.currentPosition))}</strong>`;
+      subInfo = `<span class="sub-info">Checked depth: ${r.checkedDepth || 0}</span>`;
     } else if (r.matchStatus === 'OTHER DOMAIN PAGE FOUND') {
       matchBadgeClass = 'badge-other-domain';
-      matchLabel = 'OTHER DOMAIN PAGE';
+      matchLabel = 'OTHER DOMAIN FOUND';
+      statusLabel = 'TARGET NOT FOUND';
+      const depthText = r.checkedDepth ? `Not Found (Top ${r.checkedDepth})` : 'Not Found';
+      currentCellHtml = `<span class="not-found-text">${escapeHtml(depthText)}</span>`;
+      subInfo = `<span class="sub-info" title="${escapeHtml(r.otherPageFound || '')}">Other page ranks at pos ${r.otherPagePosition || '?'}</span>`;
     } else if (r.status === 'ERROR') {
       matchBadgeClass = 'badge-error';
       matchLabel = 'ERROR';
+      statusLabel = 'ERROR';
+      currentCellHtml = `<span class="not-found-text">Error</span>`;
+      subInfo = `<span class="sub-info" title="${escapeHtml(r.error || '')}">${escapeHtml(r.error || 'Error')}</span>`;
+    } else {
+      matchBadgeClass = 'badge-not-found';
+      matchLabel = 'NOT FOUND';
+      statusLabel = 'TARGET NOT FOUND';
+      const depthText = r.checkedDepth ? `Not Found (Top ${r.checkedDepth})` : 'Not Found';
+      currentCellHtml = `<span class="not-found-text">${escapeHtml(depthText)}</span>`;
+      subInfo = `<span class="sub-info">Checked ${r.checkedDepth || 0} results</span>`;
     }
-
-    // Optional subtitle for cannibalization / other page
-    let subInfo = '';
-    if (r.otherPageFound) {
-      subInfo = `<span class="sub-info" title="${escapeHtml(r.otherPageFound)}">Domain ranks at pos ${r.otherPagePosition || '?'}</span>`;
-    } else if (r.error) {
-      subInfo = `<span class="sub-info" title="${escapeHtml(r.error)}">${escapeHtml(r.error)}</span>`;
-    }
-
-    const currentDisplay = r.currentPosition !== null && r.currentPosition !== undefined
-      ? r.currentPosition
-      : 'Not Found';
 
     return `
       <tr>
         <td class="keyword-cell" title="${escapeHtml(r.keyword)}">${escapeHtml(r.keyword)}</td>
         <td class="url-cell" title="${escapeHtml(r.targetUrl)}">${escapeHtml(r.targetUrl)}</td>
         <td class="text-center">${escapeHtml(String(r.previousPosition || '-'))}</td>
-        <td class="text-center"><strong>${escapeHtml(String(currentDisplay))}</strong></td>
+        <td class="text-center">${currentCellHtml}</td>
         <td class="text-center ${changeClass}">${escapeHtml(r.change || '—')}</td>
         <td>
           <span class="rank-badge ${matchBadgeClass}">${escapeHtml(matchLabel)}</span>
           ${subInfo}
         </td>
         <td>
-          <span class="rank-badge ${matchBadgeClass}">${escapeHtml(r.status || matchLabel)}</span>
+          <span class="rank-badge ${matchBadgeClass}">${escapeHtml(statusLabel)}</span>
         </td>
       </tr>
     `;
@@ -275,7 +290,9 @@ async function initialize() {
     // Apply settings
     if (settings) {
       if (settings.googleDomain) googleDomainSelect.value = settings.googleDomain;
+      if (settings.maxPosition && maxPositionSelect) maxPositionSelect.value = String(settings.maxPosition);
       if (settings.delaySeconds) delaySecondsInput.value = settings.delaySeconds;
+      if (debugModeCheckbox) debugModeCheckbox.checked = Boolean(settings.debugMode);
     }
 
     // Apply state
@@ -311,7 +328,9 @@ btnStart.addEventListener('click', () => {
 
   const settings = {
     googleDomain: googleDomainSelect.value,
-    delaySeconds: Math.max(5, parseInt(delaySecondsInput.value, 10) || 8)
+    maxPosition: parseInt(maxPositionSelect ? maxPositionSelect.value : 50, 10) || 50,
+    delaySeconds: Math.max(5, parseInt(delaySecondsInput.value, 10) || 8),
+    debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false
   };
 
   chrome.runtime.sendMessage({
@@ -369,21 +388,27 @@ btnClear.addEventListener('click', () => {
 });
 
 // Save settings on change
-googleDomainSelect.addEventListener('change', () => {
+function saveCurrentSettings() {
+  const settings = {
+    googleDomain: googleDomainSelect.value,
+    maxPosition: parseInt(maxPositionSelect ? maxPositionSelect.value : 50, 10) || 50,
+    delaySeconds: Math.max(5, parseInt(delaySecondsInput.value, 10) || 8),
+    debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false
+  };
   chrome.runtime.sendMessage({
     action: 'SAVE_SETTINGS',
-    settings: { googleDomain: googleDomainSelect.value }
+    settings: settings
   });
-});
+}
 
+googleDomainSelect.addEventListener('change', saveCurrentSettings);
+if (maxPositionSelect) maxPositionSelect.addEventListener('change', saveCurrentSettings);
 delaySecondsInput.addEventListener('change', () => {
   const val = Math.max(5, parseInt(delaySecondsInput.value, 10) || 8);
   delaySecondsInput.value = val;
-  chrome.runtime.sendMessage({
-    action: 'SAVE_SETTINGS',
-    settings: { delaySeconds: val }
-  });
+  saveCurrentSettings();
 });
+if (debugModeCheckbox) debugModeCheckbox.addEventListener('change', saveCurrentSettings);
 
 // COPY RESULTS button handler (Excel TSV clipboard copy)
 btnCopy.addEventListener('click', async () => {
@@ -397,7 +422,6 @@ btnCopy.addEventListener('click', async () => {
     await navigator.clipboard.writeText(tsvData);
     showToast('Copied to clipboard! Ready to paste into Excel.');
   } catch (err) {
-    // Fallback using textarea execCommand
     const tempEl = document.createElement('textarea');
     tempEl.value = tsvData;
     document.body.appendChild(tempEl);

@@ -50,19 +50,30 @@ export function exportToTsv(results) {
     'Change',
     'Match Type',
     'Status',
-    'Checked Depth'
+    'Checked Depth',
+    'Other Domain Page'
   ];
 
-  const rows = results.map(r => [
-    cleanTsvField(r.keyword),
-    cleanTsvField(r.targetUrl),
-    cleanTsvField(r.previousPosition),
-    cleanTsvField(r.currentPosition !== null && r.currentPosition !== undefined ? r.currentPosition : 'Not Found'),
-    cleanTsvField(r.change),
-    cleanTsvField(r.matchStatus || r.status),
-    cleanTsvField(r.status),
-    cleanTsvField(r.checkedDepth || 0)
-  ].join('\t'));
+  const rows = results.map(r => {
+    let otherDomainStr = '';
+    if (r.otherPageFound) {
+      otherDomainStr = `${r.otherPageFound} (pos ${r.otherPagePosition || '?'})`;
+    }
+
+    const currentDisplay = r.displayPosition || (r.currentPosition !== null && r.currentPosition !== undefined ? r.currentPosition : 'Not Found');
+
+    return [
+      cleanTsvField(r.keyword),
+      cleanTsvField(r.targetUrl),
+      cleanTsvField(r.previousPosition),
+      cleanTsvField(currentDisplay),
+      cleanTsvField(r.change),
+      cleanTsvField(r.matchStatus || r.status),
+      cleanTsvField(r.status),
+      cleanTsvField(r.checkedDepth || 0),
+      cleanTsvField(otherDomainStr)
+    ].join('\t');
+  });
 
   return [headers.join('\t'), ...rows].join('\n');
 }
@@ -87,21 +98,32 @@ export function exportToCsv(results) {
     'status',
     'checked_depth',
     'found_url',
+    'other_domain_page',
     'checked_at'
   ];
 
-  const rows = results.map(r => [
-    escapeCsvField(r.keyword),
-    escapeCsvField(r.targetUrl),
-    escapeCsvField(r.previousPosition),
-    escapeCsvField(r.currentPosition !== null && r.currentPosition !== undefined ? r.currentPosition : 'Not Found'),
-    escapeCsvField(r.change),
-    escapeCsvField(r.matchStatus),
-    escapeCsvField(r.status),
-    escapeCsvField(r.checkedDepth || 0),
-    escapeCsvField(r.foundUrl || ''),
-    escapeCsvField(r.checkedAt || new Date().toISOString())
-  ].join(','));
+  const rows = results.map(r => {
+    let otherDomainStr = '';
+    if (r.otherPageFound) {
+      otherDomainStr = `${r.otherPageFound} (pos ${r.otherPagePosition || '?'})`;
+    }
+
+    const currentDisplay = r.displayPosition || (r.currentPosition !== null && r.currentPosition !== undefined ? r.currentPosition : 'Not Found');
+
+    return [
+      escapeCsvField(r.keyword),
+      escapeCsvField(r.targetUrl),
+      escapeCsvField(r.previousPosition),
+      escapeCsvField(currentDisplay),
+      escapeCsvField(r.change),
+      escapeCsvField(r.matchStatus),
+      escapeCsvField(r.status),
+      escapeCsvField(r.checkedDepth || 0),
+      escapeCsvField(r.foundUrl || ''),
+      escapeCsvField(otherDomainStr),
+      escapeCsvField(r.checkedAt || new Date().toISOString())
+    ].join(',');
+  });
 
   return [headers.join(','), ...rows].join('\r\n');
 }

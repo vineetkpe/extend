@@ -14,16 +14,20 @@ const STORAGE_KEYS = {
 const DEFAULT_SETTINGS = {
   googleDomain: 'google.com',
   delaySeconds: 8,
-  maxPosition: 100,
+  maxPosition: 50,
   debugMode: false
 };
 
 const DEFAULT_JOB_STATE = {
+  runId: null,
   status: 'IDLE', // 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'BLOCKED' | 'COMPLETED'
   queue: [],
   currentIndex: 0,
   results: [],
   searchTabId: null,
+  currentKeyword: null,
+  currentSerpOffset: 0,
+  checkedDepth: 0,
   errorMessage: null,
   lastUpdated: null
 };

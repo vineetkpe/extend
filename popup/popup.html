@@ -54,8 +54,26 @@
         </div>
 
         <div class="form-group">
-          <label for="delaySeconds">Delay Between Searches (sec)</label>
+          <label for="maxPosition">Max Ranking Depth</label>
+          <select id="maxPosition">
+            <option value="10">Top 10</option>
+            <option value="20">Top 20</option>
+            <option value="30">Top 30</option>
+            <option value="50" selected>Top 50 (Default)</option>
+            <option value="100">Top 100</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="delaySeconds">Delay Between Keywords (sec)</label>
           <input type="number" id="delaySeconds" min="5" max="60" value="8">
+        </div>
+
+        <div class="form-group checkbox-group">
+          <label for="debugMode" class="checkbox-label">
+            <input type="checkbox" id="debugMode">
+            <span>Debug Mode (Logs & Tool)</span>
+          </label>
         </div>
       </div>
 

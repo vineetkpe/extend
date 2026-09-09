@@ -124,12 +124,17 @@
             return;
           }
 
-          const organicResults = window.serpParser.extractOrganicResults(document, request.debug);
+          const parserOutput = window.serpParser.extractOrganicResults(document, {
+            debug: request.debug,
+            keyword: request.keyword,
+            startOffset: request.startOffset
+          });
 
           sendResponse({
             status: 'SUCCESS',
-            results: organicResults,
-            totalFound: organicResults.length
+            results: parserOutput.results,
+            checkedDepth: parserOutput.checkedDepth,
+            debugInfo: parserOutput.debugInfo
           });
         } catch (err) {
           sendResponse({
