@@ -7,6 +7,7 @@
 import { parseInputRows } from '../utils/parser.js';
 import { exportToTsv, exportToCsv } from '../utils/exporter.js';
 import { getInputText, saveInputText } from '../utils/storage.js';
+import { validateCoordinates } from '../utils/locationValidator.js';
 
 // DOM Elements
 const statusBadge = document.getElementById('statusBadge');
@@ -19,6 +20,19 @@ const googleDomainSelect = document.getElementById('googleDomain');
 const maxPositionSelect = document.getElementById('maxPosition');
 const delaySecondsInput = document.getElementById('delaySeconds');
 const debugModeCheckbox = document.getElementById('debugMode');
+
+// Location Simulation DOM Elements (Milestone 2)
+const useLocationCheckbox = document.getElementById('useLocation');
+const locationStatusIndicator = document.getElementById('locationStatusIndicator');
+const locationFieldsGrid = document.getElementById('locationFieldsGrid');
+const locationNameInput = document.getElementById('locationName');
+const accuracyInput = document.getElementById('accuracy');
+const latitudeInput = document.getElementById('latitude');
+const longitudeInput = document.getElementById('longitude');
+const locationValidationMsg = document.getElementById('locationValidationMsg');
+const btnApplyLocation = document.getElementById('btnApplyLocation');
+const btnTestLocation = document.getElementById('btnTestLocation');
+const btnResetLocation = document.getElementById('btnResetLocation');
 
 const btnStart = document.getElementById('btnStart');
 const btnPause = document.getElementById('btnPause');
@@ -61,6 +75,64 @@ function getTodayDateStr() {
 }
 
 /**
+ * Renders the location status badge and enables/disables input fields
+ * @param {boolean} isApplied 
+ * @param {object|null} details 
+ * @param {boolean} needsReapply 
+ */
+function renderLocationStatus(isApplied = false, details = null, needsReapply = false) {
+  if (!useLocationCheckbox || !locationStatusIndicator) return;
+
+  if (!useLocationCheckbox.checked) {
+    locationStatusIndicator.textContent = 'LOCATION: NOT SET';
+    locationStatusIndicator.className = 'location-status-badge status-not-set';
+    if (locationFieldsGrid) locationFieldsGrid.classList.add('disabled-grid');
+    if (btnApplyLocation) btnApplyLocation.disabled = true;
+    if (btnTestLocation) btnTestLocation.disabled = true;
+    if (btnResetLocation) btnResetLocation.disabled = true;
+    return;
+  }
+
+  // Location simulation is enabled
+  if (locationFieldsGrid) locationFieldsGrid.classList.remove('disabled-grid');
+  if (btnApplyLocation) btnApplyLocation.disabled = false;
+  if (btnTestLocation) btnTestLocation.disabled = false;
+  if (btnResetLocation) btnResetLocation.disabled = false;
+
+  if (needsReapply) {
+    locationStatusIndicator.textContent = 'LOCATION NEEDS REAPPLY';
+    locationStatusIndicator.className = 'location-status-badge status-warning';
+  } else if (isApplied && details && details.latitude !== undefined && details.longitude !== undefined) {
+    locationStatusIndicator.textContent = `LOCATION: ACTIVE (${details.latitude}, ${details.longitude})`;
+    locationStatusIndicator.className = 'location-status-badge status-active';
+  } else {
+    locationStatusIndicator.textContent = 'LOCATION: NOT SET';
+    locationStatusIndicator.className = 'location-status-badge status-not-set';
+  }
+}
+
+/**
+ * Displays feedback message under the location fields
+ * @param {string} msg 
+ * @param {boolean} isSuccess 
+ */
+function showLocationMessage(msg, isSuccess = false) {
+  if (!locationValidationMsg) return;
+  if (!msg) {
+    locationValidationMsg.classList.add('hidden');
+    locationValidationMsg.innerHTML = '';
+    return;
+  }
+  locationValidationMsg.classList.remove('hidden');
+  if (isSuccess) {
+    locationValidationMsg.className = 'location-validation-msg success-msg';
+  } else {
+    locationValidationMsg.className = 'location-validation-msg';
+  }
+  locationValidationMsg.textContent = msg;
+}
+
+/**
  * Updates UI control buttons and badges based on job status
  */
 function renderStatus(status, errorMessage = null) {
@@ -90,6 +162,10 @@ function renderStatus(status, errorMessage = null) {
       if (maxPositionSelect) maxPositionSelect.disabled = true;
       delaySecondsInput.disabled = true;
       if (debugModeCheckbox) debugModeCheckbox.disabled = true;
+      if (useLocationCheckbox) useLocationCheckbox.disabled = true;
+      if (btnApplyLocation) btnApplyLocation.disabled = true;
+      if (btnTestLocation) btnTestLocation.disabled = true;
+      if (btnResetLocation) btnResetLocation.disabled = true;
       break;
 
     case 'PAUSED':
@@ -105,6 +181,10 @@ function renderStatus(status, errorMessage = null) {
       if (maxPositionSelect) maxPositionSelect.disabled = false;
       delaySecondsInput.disabled = false;
       if (debugModeCheckbox) debugModeCheckbox.disabled = false;
+      if (useLocationCheckbox) useLocationCheckbox.disabled = false;
+      if (btnApplyLocation) btnApplyLocation.disabled = !useLocationCheckbox.checked;
+      if (btnTestLocation) btnTestLocation.disabled = !useLocationCheckbox.checked;
+      if (btnResetLocation) btnResetLocation.disabled = !useLocationCheckbox.checked;
       break;
 
     case 'STOPPED':
@@ -122,6 +202,10 @@ function renderStatus(status, errorMessage = null) {
       if (maxPositionSelect) maxPositionSelect.disabled = false;
       delaySecondsInput.disabled = false;
       if (debugModeCheckbox) debugModeCheckbox.disabled = false;
+      if (useLocationCheckbox) useLocationCheckbox.disabled = false;
+      if (btnApplyLocation) btnApplyLocation.disabled = !useLocationCheckbox.checked;
+      if (btnTestLocation) btnTestLocation.disabled = !useLocationCheckbox.checked;
+      if (btnResetLocation) btnResetLocation.disabled = !useLocationCheckbox.checked;
       break;
   }
 }
@@ -293,6 +377,22 @@ async function initialize() {
       if (settings.maxPosition && maxPositionSelect) maxPositionSelect.value = String(settings.maxPosition);
       if (settings.delaySeconds) delaySecondsInput.value = settings.delaySeconds;
       if (debugModeCheckbox) debugModeCheckbox.checked = Boolean(settings.debugMode);
+
+      if (settings.useLocation !== undefined && useLocationCheckbox) {
+        useLocationCheckbox.checked = Boolean(settings.useLocation);
+      }
+      if (settings.locationName !== undefined && locationNameInput) {
+        locationNameInput.value = settings.locationName || '';
+      }
+      if (settings.accuracy !== undefined && accuracyInput) {
+        accuracyInput.value = settings.accuracy || 20;
+      }
+      if (settings.latitude !== undefined && latitudeInput) {
+        latitudeInput.value = settings.latitude || '';
+      }
+      if (settings.longitude !== undefined && longitudeInput) {
+        longitudeInput.value = settings.longitude || '';
+      }
     }
 
     // Apply state
@@ -302,6 +402,9 @@ async function initialize() {
       if (state.queue && state.queue.length > 0) {
         renderProgress(state.currentIndex, state.queue.length);
       }
+      renderLocationStatus(Boolean(state.locationApplied), state.locationDetails, false);
+    } else {
+      renderLocationStatus(false, null, false);
     }
   });
 }
@@ -326,11 +429,27 @@ btnStart.addEventListener('click', () => {
     return;
   }
 
+  // If location simulation is enabled, validate coordinates before starting
+  if (useLocationCheckbox && useLocationCheckbox.checked) {
+    const locValidation = validateCoordinates(latitudeInput.value, longitudeInput.value, accuracyInput.value);
+    if (!locValidation.valid) {
+      showLocationMessage(locValidation.error, false);
+      showToast('Invalid location coordinates. Please fix before starting.');
+      return;
+    }
+  }
+  showLocationMessage('', false);
+
   const settings = {
     googleDomain: googleDomainSelect.value,
     maxPosition: parseInt(maxPositionSelect ? maxPositionSelect.value : 50, 10) || 50,
     delaySeconds: Math.max(5, parseInt(delaySecondsInput.value, 10) || 8),
-    debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false
+    debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false,
+    useLocation: useLocationCheckbox ? useLocationCheckbox.checked : false,
+    latitude: latitudeInput ? latitudeInput.value.trim() : '',
+    longitude: longitudeInput ? longitudeInput.value.trim() : '',
+    accuracy: accuracyInput ? (parseInt(accuracyInput.value, 10) || 20) : 20,
+    locationName: locationNameInput ? locationNameInput.value.trim() : ''
   };
 
   chrome.runtime.sendMessage({
@@ -342,6 +461,12 @@ btnStart.addEventListener('click', () => {
       renderStatus(res.state.status);
       renderResultsTable(res.state.results);
       renderProgress(res.state.currentIndex, parsed.valid.length);
+      if (res.state.locationApplied) {
+        renderLocationStatus(true, res.state.locationDetails, false);
+      }
+    } else if (res && !res.success && res.error) {
+      showLocationMessage(res.error, false);
+      showToast(res.error);
     }
   });
 });
@@ -393,7 +518,12 @@ function saveCurrentSettings() {
     googleDomain: googleDomainSelect.value,
     maxPosition: parseInt(maxPositionSelect ? maxPositionSelect.value : 50, 10) || 50,
     delaySeconds: Math.max(5, parseInt(delaySecondsInput.value, 10) || 8),
-    debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false
+    debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false,
+    useLocation: useLocationCheckbox ? useLocationCheckbox.checked : false,
+    latitude: latitudeInput ? latitudeInput.value.trim() : '',
+    longitude: longitudeInput ? longitudeInput.value.trim() : '',
+    accuracy: accuracyInput ? (parseInt(accuracyInput.value, 10) || 20) : 20,
+    locationName: locationNameInput ? locationNameInput.value.trim() : ''
   };
   chrome.runtime.sendMessage({
     action: 'SAVE_SETTINGS',
@@ -409,6 +539,132 @@ delaySecondsInput.addEventListener('change', () => {
   saveCurrentSettings();
 });
 if (debugModeCheckbox) debugModeCheckbox.addEventListener('change', saveCurrentSettings);
+
+// Location inputs event listeners
+if (useLocationCheckbox) {
+  useLocationCheckbox.addEventListener('change', () => {
+    renderLocationStatus(false, null, false);
+    saveCurrentSettings();
+    showLocationMessage('', false);
+  });
+}
+
+if (latitudeInput) {
+  latitudeInput.addEventListener('input', () => {
+    showLocationMessage('', false);
+    saveCurrentSettings();
+  });
+}
+if (longitudeInput) {
+  longitudeInput.addEventListener('input', () => {
+    showLocationMessage('', false);
+    saveCurrentSettings();
+  });
+}
+if (accuracyInput) {
+  accuracyInput.addEventListener('change', saveCurrentSettings);
+}
+if (locationNameInput) {
+  locationNameInput.addEventListener('input', saveCurrentSettings);
+}
+
+// APPLY LOCATION button handler
+if (btnApplyLocation) {
+  btnApplyLocation.addEventListener('click', () => {
+    const lat = latitudeInput.value.trim();
+    const lon = longitudeInput.value.trim();
+    const acc = accuracyInput.value.trim();
+    const locName = locationNameInput.value.trim();
+
+    const val = validateCoordinates(lat, lon, acc);
+    if (!val.valid) {
+      showLocationMessage(val.error, false);
+      showToast('Validation Error: ' + val.error);
+      return;
+    }
+
+    showLocationMessage('', false);
+    chrome.runtime.sendMessage({
+      action: 'APPLY_LOCATION',
+      location: {
+        latitude: val.latitude,
+        longitude: val.longitude,
+        accuracy: val.accuracy,
+        locationName: locName
+      }
+    }, (res) => {
+      if (res && res.success) {
+        renderLocationStatus(true, { latitude: val.latitude, longitude: val.longitude });
+        showLocationMessage(`Location override active: ${val.latitude}, ${val.longitude}`, true);
+        showToast('Location override applied.');
+      } else {
+        const errMsg = (res && res.error) ? res.error : 'Failed to apply location override.';
+        showLocationMessage(errMsg, false);
+        showToast(errMsg);
+      }
+    });
+  });
+}
+
+// RESET LOCATION button handler
+if (btnResetLocation) {
+  btnResetLocation.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'RESET_LOCATION' }, (res) => {
+      if (res && res.success) {
+        if (useLocationCheckbox) useLocationCheckbox.checked = false;
+        renderLocationStatus(false, null, false);
+        showLocationMessage('Location override removed.', true);
+        showToast('Location override removed.');
+        setTimeout(() => showLocationMessage('', false), 2500);
+      }
+    });
+  });
+}
+
+// TEST LOCATION button handler
+if (btnTestLocation) {
+  btnTestLocation.addEventListener('click', () => {
+    const lat = latitudeInput.value.trim();
+    const lon = longitudeInput.value.trim();
+    const acc = accuracyInput.value.trim();
+
+    const val = validateCoordinates(lat, lon, acc);
+    if (!val.valid) {
+      showLocationMessage(val.error, false);
+      showToast(val.error);
+      return;
+    }
+
+    btnTestLocation.disabled = true;
+    btnTestLocation.textContent = 'TESTING...';
+    showLocationMessage('Applying coordinates and verifying browser geolocation...', true);
+
+    chrome.runtime.sendMessage({
+      action: 'TEST_LOCATION',
+      location: {
+        latitude: val.latitude,
+        longitude: val.longitude,
+        accuracy: val.accuracy
+      }
+    }, (res) => {
+      btnTestLocation.disabled = false;
+      btnTestLocation.textContent = 'TEST LOCATION';
+
+      if (res && res.success && res.verified) {
+        renderLocationStatus(true, { latitude: res.latitude, longitude: res.longitude });
+        showLocationMessage(`Location Override Applied (Verified: ${res.latitude}, ${res.longitude})`, true);
+        showToast('Location Override Applied');
+      } else if (res && res.success && !res.verified) {
+        showLocationMessage(`Location set, but browser reported coordinates: ${res.latitude}, ${res.longitude}`, false);
+        showToast('Location Override Failed');
+      } else {
+        const err = (res && res.error) ? res.error : 'Location Override Failed';
+        showLocationMessage(err, false);
+        showToast('Location Override Failed');
+      }
+    });
+  });
+}
 
 // COPY RESULTS button handler (Excel TSV clipboard copy)
 btnCopy.addEventListener('click', async () => {
@@ -462,6 +718,14 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
   } else if (msg.action === 'JOB_BLOCKED') {
     renderStatus('BLOCKED', msg.message);
+  } else if (msg.action === 'LOCATION_STATUS_UPDATE') {
+    if (msg.status === 'ACTIVE') {
+      renderLocationStatus(true, msg.details, false);
+    } else if (msg.status === 'NEEDS_REAPPLY') {
+      renderLocationStatus(false, null, true);
+    } else if (msg.status === 'NOT_SET') {
+      renderLocationStatus(false, null, false);
+    }
   }
 });
 

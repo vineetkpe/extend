@@ -10,6 +10,7 @@
 
 import { matchUrl, MATCH_TYPES, normalizeUrl } from './utils/urlNormalizer.js';
 import { calculateChange } from './utils/parser.js';
+import { validateCoordinates } from './utils/locationValidator.js';
 import {
   getSettings,
   saveSettings,
@@ -21,6 +22,9 @@ import {
 // Queue loop lifecycle management
 let activeQueuePromise = null;
 let activeRunId = null;
+
+// Debugger session management for Geolocation CDP Override
+let activeDebuggerTabId = null;
 
 /**
  * Generates a unique execution session identifier
@@ -51,27 +55,237 @@ async function debugLog(data) {
 }
 
 /**
+ * Attaches Chrome Debugger to the specified target.
+ * @param {object} target { tabId: number }
+ * @returns {Promise<void>}
+ */
+function attachDebugger(target) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.attach(target, '1.3', () => {
+      if (chrome.runtime.lastError) {
+        return reject(new Error(chrome.runtime.lastError.message));
+      }
+      resolve();
+    });
+  });
+}
+
+/**
+ * Detaches Chrome Debugger from the specified target safely.
+ * @param {object} target { tabId: number }
+ * @returns {Promise<void>}
+ */
+function detachDebugger(target) {
+  return new Promise((resolve) => {
+    chrome.debugger.detach(target, () => {
+      if (chrome.runtime.lastError) {
+        // Tab already closed or already detached
+      }
+      resolve();
+    });
+  });
+}
+
+/**
+ * Sends a CDP command to the specified target.
+ * @param {object} target { tabId: number }
+ * @param {string} method
+ * @param {object} params
+ * @returns {Promise<any>}
+ */
+function sendDebuggerCommand(target, method, params = {}) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand(target, method, params, (result) => {
+      if (chrome.runtime.lastError) {
+        return reject(new Error(chrome.runtime.lastError.message));
+      }
+      resolve(result);
+    });
+  });
+}
+
+/**
+ * Applies geolocation override to a given tab using Chrome DevTools Protocol (CDP).
+ * @param {number} tabId 
+ * @param {object} coords { latitude, longitude, accuracy, locationName }
+ * @param {string} googleDomain 
+ * @returns {Promise<{ success: boolean, coords: object }>}
+ */
+async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.com') {
+  const validation = validateCoordinates(coords.latitude, coords.longitude, coords.accuracy);
+  if (!validation.valid) {
+    throw new Error(validation.error || 'Invalid coordinates for geolocation override.');
+  }
+
+  const target = { tabId };
+
+  // If already attached to a different tab, detach first
+  if (activeDebuggerTabId && activeDebuggerTabId !== tabId) {
+    await detachDebugger({ tabId: activeDebuggerTabId });
+    activeDebuggerTabId = null;
+  }
+
+  // Attach to tab if not already attached
+  if (activeDebuggerTabId !== tabId) {
+    try {
+      await attachDebugger(target);
+      activeDebuggerTabId = tabId;
+      await debugLog(`[LRC Debugger] Attached to tab ${tabId}`);
+    } catch (err) {
+      if (err.message && err.message.includes('already attached')) {
+        activeDebuggerTabId = tabId;
+      } else {
+        throw new Error(`Failed to attach debugger to search tab: ${err.message}`);
+      }
+    }
+  }
+
+  // Send Emulation.setGeolocationOverride
+  await sendDebuggerCommand(target, 'Emulation.setGeolocationOverride', {
+    latitude: validation.latitude,
+    longitude: validation.longitude,
+    accuracy: validation.accuracy
+  });
+
+  // Attempt to grant geolocation permissions to Google domain
+  try {
+    await sendDebuggerCommand(target, 'Browser.grantPermissions', {
+      permissions: ['geolocation'],
+      origin: `https://www.${googleDomain}`
+    });
+  } catch (_) {}
+
+  await debugLog({
+    action: 'Emulation.setGeolocationOverride',
+    tabId,
+    latitude: validation.latitude,
+    longitude: validation.longitude,
+    accuracy: validation.accuracy,
+    locationName: coords.locationName || null
+  });
+
+  await saveJobState({
+    locationApplied: true,
+    locationTabId: tabId,
+    locationDetails: {
+      latitude: validation.latitude,
+      longitude: validation.longitude,
+      accuracy: validation.accuracy,
+      locationName: coords.locationName || ''
+    }
+  });
+
+  broadcastMessage({
+    action: 'LOCATION_STATUS_UPDATE',
+    status: 'ACTIVE',
+    tabId,
+    details: {
+      latitude: validation.latitude,
+      longitude: validation.longitude,
+      accuracy: validation.accuracy,
+      locationName: coords.locationName || ''
+    }
+  });
+
+  return { success: true, coords: validation };
+}
+
+/**
+ * Clears geolocation override and detaches debugger session.
+ * @param {number|null} tabId 
+ * @returns {Promise<void>}
+ */
+async function clearGeolocationOverride(tabId = null) {
+  const targetId = tabId || activeDebuggerTabId;
+  if (targetId) {
+    try {
+      await sendDebuggerCommand({ tabId: targetId }, 'Emulation.clearGeolocationOverride', {});
+    } catch (_) {}
+    try {
+      await detachDebugger({ tabId: targetId });
+    } catch (_) {}
+  }
+  activeDebuggerTabId = null;
+
+  await saveJobState({
+    locationApplied: false,
+    locationTabId: null,
+    locationDetails: null
+  });
+
+  broadcastMessage({
+    action: 'LOCATION_STATUS_UPDATE',
+    status: 'NOT_SET'
+  });
+
+  await debugLog('[LRC Debugger] Geolocation override cleared and debugger detached.');
+}
+
+// Track external debugger detachment (e.g. user clicked Cancel on Chrome infobar or tab closed)
+chrome.debugger.onDetach.addListener((source, reason) => {
+  if (activeDebuggerTabId && activeDebuggerTabId === source.tabId) {
+    debugLog(`[LRC Debugger] Detached from tab ${source.tabId}. Reason: ${reason}`);
+    activeDebuggerTabId = null;
+    saveJobState({
+      locationApplied: false,
+      locationTabId: null
+    });
+    broadcastMessage({
+      action: 'LOCATION_STATUS_UPDATE',
+      status: 'NEEDS_REAPPLY',
+      reason: reason
+    });
+  }
+});
+
+/**
  * Ensures a visible search tab exists, either reusing an existing one or creating a new tab.
+ * If location simulation is enabled, guarantees geolocation override is applied/reapplied.
  * @param {number|null} existingTabId 
+ * @param {object|null} settings
  * @returns {Promise<chrome.tabs.Tab>}
  */
-async function ensureSearchTab(existingTabId) {
+async function ensureSearchTab(existingTabId, settings = null) {
+  let tab = null;
+  let isNewTab = false;
+
   if (existingTabId) {
     try {
-      const tab = await chrome.tabs.get(existingTabId);
-      if (tab) {
-        return tab;
-      }
+      tab = await chrome.tabs.get(existingTabId);
     } catch (_) {
       // Tab was closed; create new one
     }
   }
 
-  const newTab = await chrome.tabs.create({
-    url: 'https://www.google.com',
-    active: true
-  });
-  return newTab;
+  if (!tab) {
+    tab = await chrome.tabs.create({
+      url: 'https://www.google.com',
+      active: true
+    });
+    isNewTab = true;
+  }
+
+  // If location simulation is enabled, ensure location override is active on this tab
+  if (settings && settings.useLocation) {
+    const coordsValidation = validateCoordinates(settings.latitude, settings.longitude, settings.accuracy);
+    if (coordsValidation.valid) {
+      if (isNewTab || activeDebuggerTabId !== tab.id) {
+        await debugLog(`[LRC] Applying/re-applying geolocation override to search tab ${tab.id}...`);
+        try {
+          await applyGeolocationOverride(tab.id, {
+            latitude: coordsValidation.latitude,
+            longitude: coordsValidation.longitude,
+            accuracy: coordsValidation.accuracy,
+            locationName: settings.locationName || ''
+          }, settings.googleDomain || 'google.com');
+        } catch (err) {
+          console.error('[LRC] Geolocation override application failed:', err);
+        }
+      }
+    }
+  }
+
+  return tab;
 }
 
 /**
@@ -247,7 +461,14 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
       googleUrl: searchUrl,
       currentSerpOffset: offset,
       maxDepth,
-      cumulativeCountSoFar: cumulativeResults.length
+      cumulativeCountSoFar: cumulativeResults.length,
+      locationEnabled: Boolean(settings && settings.useLocation),
+      latitude: settings && settings.useLocation ? settings.latitude : null,
+      longitude: settings && settings.useLocation ? settings.longitude : null,
+      accuracy: settings && settings.useLocation ? (settings.accuracy || 20) : null,
+      debuggerAttached: activeDebuggerTabId === tabId,
+      tabId: tabId,
+      overrideApplied: activeDebuggerTabId === tabId
     });
 
     // Update storage with active pagination offset
@@ -485,10 +706,10 @@ async function runQueueLoop(runId) {
 
     await debugLog(`[LRC] Processing keyword ${index + 1}/${state.queue.length}: "${item.keyword}"`);
 
-    // Ensure visible search tab exists
+    // Ensure visible search tab exists (with location simulation if enabled)
     let tab;
     try {
-      tab = await ensureSearchTab(state.searchTabId);
+      tab = await ensureSearchTab(state.searchTabId, settings);
       await saveJobState({ searchTabId: tab.id });
     } catch (err) {
       console.error('[LRC] Could not establish search tab:', err);
@@ -707,6 +928,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           await saveSettings(settings);
         }
 
+        // Validate location coordinates if location simulation is enabled
+        if (settings && settings.useLocation) {
+          const locVal = validateCoordinates(settings.latitude, settings.longitude, settings.accuracy);
+          if (!locVal.valid) {
+            sendResponse({
+              success: false,
+              error: locVal.error,
+              message: `Location Error: ${locVal.error}`
+            });
+            return;
+          }
+        }
+
         const runId = generateRunId();
 
         const state = await saveJobState({
@@ -781,6 +1015,186 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ success: true });
         return;
       }
+      if (request.action === 'APPLY_LOCATION') {
+        const loc = request.location || {};
+        const validation = validateCoordinates(loc.latitude, loc.longitude, loc.accuracy);
+        if (!validation.valid) {
+          sendResponse({ success: false, error: validation.error });
+          return;
+        }
+
+        await saveSettings({
+          useLocation: true,
+          latitude: String(validation.latitude),
+          longitude: String(validation.longitude),
+          accuracy: validation.accuracy,
+          locationName: loc.locationName || ''
+        });
+
+        const state = await getJobState();
+        let targetTabId = state.searchTabId;
+        let tab = null;
+        if (targetTabId) {
+          try {
+            tab = await chrome.tabs.get(targetTabId);
+          } catch (_) {
+            tab = null;
+          }
+        }
+
+        const settings = await getSettings();
+        if (tab) {
+          try {
+            await applyGeolocationOverride(tab.id, {
+              latitude: validation.latitude,
+              longitude: validation.longitude,
+              accuracy: validation.accuracy,
+              locationName: loc.locationName || ''
+            }, settings.googleDomain || 'google.com');
+            sendResponse({ success: true, applied: true, tabId: tab.id, details: validation });
+            return;
+          } catch (err) {
+            sendResponse({ success: false, error: err.message });
+            return;
+          }
+        } else {
+          // Tab not created yet; save configured state so it will apply on START
+          await saveJobState({
+            locationApplied: true,
+            locationTabId: null,
+            locationDetails: {
+              latitude: validation.latitude,
+              longitude: validation.longitude,
+              accuracy: validation.accuracy,
+              locationName: loc.locationName || ''
+            }
+          });
+          sendResponse({
+            success: true,
+            applied: false,
+            message: 'Location configured. Will attach to Google search tab upon start.'
+          });
+          return;
+        }
+      }
+
+      if (request.action === 'RESET_LOCATION') {
+        await clearGeolocationOverride();
+        await saveSettings({
+          useLocation: false
+        });
+        sendResponse({ success: true });
+        return;
+      }
+
+      if (request.action === 'TEST_LOCATION') {
+        const loc = request.location || {};
+        const validation = validateCoordinates(loc.latitude, loc.longitude, loc.accuracy);
+        if (!validation.valid) {
+          sendResponse({ success: false, error: validation.error });
+          return;
+        }
+
+        const settings = await getSettings();
+        const domain = settings.googleDomain || 'google.com';
+
+        let testTab = null;
+        let createdTempTab = false;
+
+        try {
+          const state = await getJobState();
+          if (state.searchTabId) {
+            try {
+              testTab = await chrome.tabs.get(state.searchTabId);
+            } catch (_) {}
+          }
+
+          if (!testTab) {
+            testTab = await chrome.tabs.create({
+              url: `https://www.${domain}`,
+              active: false
+            });
+            createdTempTab = true;
+            await new Promise(r => setTimeout(r, 2000));
+          }
+
+          // Attach debugger and set override
+          await applyGeolocationOverride(testTab.id, validation, domain);
+
+          // Evaluate navigator.geolocation via CDP Runtime.evaluate
+          const evalResult = await sendDebuggerCommand({ tabId: testTab.id }, 'Runtime.evaluate', {
+            expression: `new Promise((resolve) => {
+              if (!navigator.geolocation) {
+                return resolve({ supported: false, error: 'navigator.geolocation not available in this tab.' });
+              }
+              navigator.geolocation.getCurrentPosition(
+                (pos) => resolve({
+                  supported: true,
+                  lat: pos.coords.latitude,
+                  lon: pos.coords.longitude,
+                  accuracy: pos.coords.accuracy
+                }),
+                (err) => resolve({
+                  supported: true,
+                  error: err.message || 'Position unavailable'
+                }),
+                { timeout: 7000, maximumAge: 0 }
+              );
+            })`,
+            awaitPromise: true,
+            returnByValue: true
+          });
+
+          const resValue = evalResult && evalResult.result ? evalResult.result.value : null;
+
+          if (createdTempTab) {
+            try {
+              await detachDebugger({ tabId: testTab.id });
+              await chrome.tabs.remove(testTab.id);
+            } catch (_) {}
+          }
+
+          if (resValue && resValue.lat !== undefined && resValue.lon !== undefined) {
+            const latDiff = Math.abs(resValue.lat - validation.latitude);
+            const lonDiff = Math.abs(resValue.lon - validation.longitude);
+            if (latDiff < 0.05 && lonDiff < 0.05) {
+              sendResponse({
+                success: true,
+                verified: true,
+                latitude: resValue.lat,
+                longitude: resValue.lon,
+                accuracy: resValue.accuracy,
+                message: `Location Override Verified: ${resValue.lat}, ${resValue.lon}`
+              });
+              return;
+            } else {
+              sendResponse({
+                success: true,
+                verified: false,
+                latitude: resValue.lat,
+                longitude: resValue.lon,
+                message: `Override set, but browser reported coordinates ${resValue.lat}, ${resValue.lon}`
+              });
+              return;
+            }
+          } else {
+            sendResponse({
+              success: false,
+              error: resValue && resValue.error ? resValue.error : 'Location Override Failed: Geolocation request timed out or was blocked.'
+            });
+            return;
+          }
+        } catch (err) {
+          if (createdTempTab && testTab) {
+            try { await chrome.tabs.remove(testTab.id); } catch (_) {}
+          }
+          sendResponse({
+            success: false,
+            error: `Location Override Failed: ${err.message}`
+          });
+          return;
+        }
+      }
     } catch (err) {
       console.error('[LRC] Message handling error:', err);
       sendResponse({ success: false, error: err.message });
@@ -795,7 +1209,14 @@ chrome.tabs.onRemoved.addListener(async (closedTabId) => {
   try {
     const state = await getJobState();
     if (state.searchTabId === closedTabId) {
-      await saveJobState({ searchTabId: null });
+      await saveJobState({ searchTabId: null, locationApplied: false, locationTabId: null });
+    }
+    if (activeDebuggerTabId === closedTabId) {
+      activeDebuggerTabId = null;
+      broadcastMessage({
+        action: 'LOCATION_STATUS_UPDATE',
+        status: 'NEEDS_REAPPLY'
+      });
     }
   } catch (_) {}
 });

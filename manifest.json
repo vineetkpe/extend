@@ -5,7 +5,8 @@
   "description": "Automate manual SEO keyword ranking on Google for weekly agency workflows.",
   "permissions": [
     "storage",
-    "tabs"
+    "tabs",
+    "debugger"
   ],
   "host_permissions": [
     "https://www.google.com/*",

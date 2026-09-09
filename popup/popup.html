@@ -77,21 +77,49 @@
         </div>
       </div>
 
-      <!-- Location Simulation Placeholders (Milestone 2) -->
+      <!-- Location Simulation Section (Milestone 2) -->
       <div class="location-container">
         <div class="location-header">
-          <label class="section-sublabel">Location Simulation</label>
-          <span class="milestone-note">Location simulation will be added in Milestone 2.</span>
+          <div class="location-toggle-group">
+            <label class="checkbox-label" for="useLocation">
+              <input type="checkbox" id="useLocation">
+              <span class="section-sublabel">Use Location Simulation</span>
+            </label>
+          </div>
+          <div id="locationStatusIndicator" class="location-status-badge status-not-set">
+            LOCATION: NOT SET
+          </div>
         </div>
-        <div class="settings-grid">
+
+        <div class="location-disclaimer">
+          Browser Location Override: simulates device coordinates in the Google search tab via DevTools Protocol. Does not alter IP address or VPN routing.
+        </div>
+
+        <div id="locationFieldsGrid" class="location-fields-grid">
           <div class="form-group">
-            <label for="latitude">Latitude</label>
-            <input type="text" id="latitude" placeholder="e.g. 51.5074" disabled>
+            <label for="locationName">Location Name <span class="helper-optional">(optional)</span></label>
+            <input type="text" id="locationName" placeholder="e.g. New York Client">
           </div>
           <div class="form-group">
-            <label for="longitude">Longitude</label>
-            <input type="text" id="longitude" placeholder="e.g. -0.1278" disabled>
+            <label for="accuracy">Accuracy (meters)</label>
+            <input type="number" id="accuracy" min="1" max="10000" value="20" placeholder="20">
           </div>
+          <div class="form-group">
+            <label for="latitude">Latitude <span class="required-star">*</span></label>
+            <input type="text" id="latitude" placeholder="e.g. 40.7128">
+          </div>
+          <div class="form-group">
+            <label for="longitude">Longitude <span class="required-star">*</span></label>
+            <input type="text" id="longitude" placeholder="e.g. -74.0060">
+          </div>
+        </div>
+
+        <div id="locationValidationMsg" class="location-validation-msg hidden"></div>
+
+        <div class="location-button-group">
+          <button type="button" id="btnApplyLocation" class="btn btn-sm btn-primary-outline">APPLY LOCATION</button>
+          <button type="button" id="btnTestLocation" class="btn btn-sm btn-outline">TEST LOCATION</button>
+          <button type="button" id="btnResetLocation" class="btn btn-sm btn-danger-outline">RESET LOCATION</button>
         </div>
       </div>
     </section>

@@ -76,7 +76,36 @@ openai chatgpt	https://chatgpt.com	1
 
 ---
 
-## 5. How to Debug / Inspect
+---
+
+## 5. Milestone 2: Browser Geolocation Simulation (`chrome.debugger`)
+
+Allows SEO professionals to simulate geographic coordinates (Latitude, Longitude, Accuracy) on the visible Google Search tab without using external proxies or third-party paid APIs.
+
+### Why the `"debugger"` permission is required:
+The extension Manifest includes the `"debugger"` permission:
+> *"It is used only to apply a user-selected browser geolocation override to the visible Google Search tab."*
+
+- The Chrome DevTools Protocol (CDP) method `Emulation.setGeolocationOverride` requires debugger attachment.
+- The session is strictly scoped to the single visible Google Search tab (`searchTabId`).
+- It does **not** inspect other tabs, read network traffic, collect cookies, or transmit data externally. Everything remains local.
+
+### How to Use Location Simulation:
+1. In the extension popup, check **Use Location Simulation**.
+2. Enter the target **Latitude** (e.g. `40.7128`) and **Longitude** (e.g. `-74.0060`).
+3. (Optional) Enter a **Location Name** (e.g. `New York Client`) and **Accuracy** (default: `20` meters).
+4. Click **APPLY LOCATION** to configure or activate the override.
+5. Click **TEST LOCATION** to verify that the browser's geolocation API in a search tab reports the simulated coordinates.
+6. Click **START** to run rank checking under the active simulated location.
+7. Click **RESET LOCATION** at any time to clear the override and detach the debugger session.
+
+### Known Limitations:
+- **Browser Geolocation Override vs. IP**: The override alters device/browser geolocation (`navigator.geolocation`). It does **not** alter public IP address, ISP, or VPN routing.
+- Google combines multiple signals (including IP subnet, Google Account history, and language preferences) to infer user location. The extension displays `Browser Location Override: ACTIVE`, but does not guarantee exact Google SERP localized results for IP-restricted queries.
+
+---
+
+## 6. How to Debug / Inspect
 
 If something does not appear as expected, inspect the relevant component:
 
@@ -89,7 +118,7 @@ If something does not appear as expected, inspect the relevant component:
    - Go to `chrome://extensions`.
    - Find **Local Rank Checker**.
    - Click the blue link: **service worker** (Inspect views: service worker).
-   - In the DevTools window that opens, view the **Console** tab for background queue and navigation logs.
+   - In the DevTools window that opens, view the **Console** tab for background queue, CDP attachment, and navigation logs.
 
 3. **Google Search Page Content Script**:
    - While a Google search tab is open during checking, press `F12` (or right-click → **Inspect**).

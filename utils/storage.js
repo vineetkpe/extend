@@ -15,7 +15,12 @@ const DEFAULT_SETTINGS = {
   googleDomain: 'google.com',
   delaySeconds: 8,
   maxPosition: 50,
-  debugMode: false
+  debugMode: false,
+  useLocation: false,
+  latitude: '',
+  longitude: '',
+  accuracy: 20,
+  locationName: ''
 };
 
 const DEFAULT_JOB_STATE = {
@@ -31,7 +36,10 @@ const DEFAULT_JOB_STATE = {
   seenUrls: [],
   lastError: null,
   errorMessage: null,
-  lastUpdated: null
+  lastUpdated: null,
+  locationApplied: false,
+  locationTabId: null,
+  locationDetails: null
 };
 
 /**
