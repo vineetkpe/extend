@@ -186,6 +186,7 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
     locationApplied: true,
     locationState: LOCATION_STATES.ACTIVE,
     locationTabId: tabId,
+    appliedLocation: activeAppliedLocation,
     locationDetails: {
       latitude: validation.latitude,
       longitude: validation.longitude,
@@ -232,6 +233,7 @@ async function clearGeolocationOverride(tabId = null) {
     locationApplied: false,
     locationState: LOCATION_STATES.NOT_CONFIGURED,
     locationTabId: null,
+    appliedLocation: null,
     locationDetails: null
   });
 
@@ -243,24 +245,446 @@ async function clearGeolocationOverride(tabId = null) {
   await debugLog('[LRC Debugger] Geolocation override cleared and debugger detached.');
 }
 
-// Track external debugger detachment (e.g. user clicked Cancel on Chrome infobar or tab closed)
-chrome.debugger.onDetach.addListener((source, reason) => {
-  if (activeDebuggerTabId && activeDebuggerTabId === source.tabId) {
-    debugLog(`[LRC Debugger] Detached from tab ${source.tabId}. Reason: ${reason}`);
+/**
+ * Real-time listener for Chrome debugger detachment.
+ * If detached from the active rank-checking search tab and location simulation is required:
+ * 1. Invalidates activeDebuggerTabId and activeAppliedLocation in memory.
+ * 2. Checks state priority: STOPPED and PAUSED are preserved.
+ * 3. If RUNNING, sets status = 'BLOCKED', sets clear lastError, preserves currentIndex.
+ * 4. Broadcasts JOB_BLOCKED and LOCATION_STATUS_UPDATE.
+ */
+chrome.debugger.onDetach.addListener(async (source, reason) => {
+  const tabId = source && source.tabId;
+  const isOurDebuggerTab = Boolean(activeDebuggerTabId && activeDebuggerTabId === tabId);
+
+  // Invalidate in-memory tracker if it was our tab
+  if (isOurDebuggerTab) {
     activeDebuggerTabId = null;
     activeAppliedLocation = null;
-    saveJobState({
+  }
+
+  try {
+    const currentState = await getJobState();
+    const isJobTab = Boolean(
+      (currentState.searchTabId && currentState.searchTabId === tabId) ||
+      (currentState.locationTabId && currentState.locationTabId === tabId) ||
+      isOurDebuggerTab
+    );
+
+    if (!isJobTab) {
+      return; // Detach event from an unrelated tab
+    }
+
+    const jobRequiresLocation = Boolean(currentState.jobSettings && currentState.jobSettings.useLocation);
+
+    const locationUpdates = {
       locationApplied: false,
       locationState: LOCATION_STATES.FAILED,
-      locationTabId: null
-    });
+      locationTabId: null,
+      appliedLocation: null
+    };
+
+    // State priority rules: STOPPED and PAUSED win over BLOCKED
+    if (currentState.status === 'STOPPED') {
+      await saveJobState({
+        ...locationUpdates,
+        status: 'STOPPED'
+      });
+      await debugLog(`[LRC Debugger] onDetach from tab ${tabId} while STOPPED. Retained STOPPED.`);
+    } else if (currentState.status === 'PAUSED') {
+      await saveJobState({
+        ...locationUpdates,
+        status: 'PAUSED'
+      });
+      await debugLog(`[LRC Debugger] onDetach from tab ${tabId} while PAUSED. Retained PAUSED.`);
+    } else if (currentState.status === 'RUNNING' && jobRequiresLocation) {
+      const errorMsg = 'Location override was lost. Rank checking has been blocked to prevent inaccurate results.';
+      await saveJobState({
+        ...locationUpdates,
+        status: 'BLOCKED',
+        errorMessage: errorMsg,
+        lastError: errorMsg,
+        currentKeyword: null,
+        currentSerpOffset: 0,
+        checkedDepth: 0,
+        seenUrls: []
+      });
+      await debugLog(`[LRC Debugger] onDetach from active search tab ${tabId} during RUNNING. Set BLOCKED.`);
+      broadcastMessage({
+        action: 'JOB_BLOCKED',
+        message: errorMsg,
+        reason: reason || 'DEBUGGER_DETACHED'
+      });
+    } else {
+      await saveJobState(locationUpdates);
+    }
+
     broadcastMessage({
       action: 'LOCATION_STATUS_UPDATE',
       status: LOCATION_STATES.FAILED,
       reason: reason
     });
+  } catch (err) {
+    console.error('[LRC Debugger] Error handling onDetach:', err);
   }
 });
+
+/**
+ * Checks whether Chrome debugger is currently attached to the tabId.
+ * Queries chrome.debugger.getTargets if available, falling back to activeDebuggerTabId.
+ * @param {number} tabId
+ * @returns {Promise<boolean>}
+ */
+async function isDebuggerAttachedToTab(tabId) {
+  if (!tabId || activeDebuggerTabId !== tabId) {
+    return false;
+  }
+  if (typeof chrome !== 'undefined' && chrome.debugger && typeof chrome.debugger.getTargets === 'function') {
+    return new Promise((resolve) => {
+      try {
+        chrome.debugger.getTargets((targets) => {
+          if (chrome.runtime.lastError || !Array.isArray(targets)) {
+            return resolve(activeDebuggerTabId === tabId);
+          }
+          const target = targets.find(t => t.tabId === tabId);
+          if (target && target.attached) {
+            return resolve(true);
+          }
+          return resolve(false);
+        });
+      } catch (_) {
+        resolve(activeDebuggerTabId === tabId);
+      }
+    });
+  }
+  return activeDebuggerTabId === tabId;
+}
+
+/**
+ * Structured debug logger for location integrity verification.
+ * Only logs when debugMode is enabled.
+ */
+async function logLocationIntegrityCheck({
+  runId,
+  expectedTabId,
+  appliedTabId,
+  expectedLat,
+  expectedLon,
+  appliedLat,
+  appliedLon,
+  debuggerAttached,
+  runtimeStatus,
+  commitAllowed,
+  failureReason
+}) {
+  await debugLog({
+    'Location integrity check': commitAllowed ? 'PASSED' : 'FAILED',
+    'Run ID': runId || null,
+    'Expected tab ID': expectedTabId ?? null,
+    'Applied tab ID': appliedTabId ?? null,
+    'Expected latitude': expectedLat ?? null,
+    'Expected longitude': expectedLon ?? null,
+    'Applied latitude': appliedLat ?? null,
+    'Applied longitude': appliedLon ?? null,
+    'Debugger attached?': Boolean(debuggerAttached),
+    'Runtime status': runtimeStatus || null,
+    'Commit allowed?': Boolean(commitAllowed),
+    'Failure reason': failureReason || null
+  });
+}
+
+/**
+ * Authoritative centralized location integrity validator.
+ * 
+ * Verifies:
+ * 1. Current runId is valid and matches.
+ * 2. Runtime status is still RUNNING (rejects STOPPED, PAUSED, BLOCKED, etc.).
+ * 3. If jobSettings.useLocation === true:
+ *    a. Location state in storage is ACTIVE and locationApplied === true.
+ *    b. Target search tab matches active search tab and locationTabId.
+ *    c. Debugger is currently attached to the search tab.
+ *    d. Applied location fingerprint matches jobSettings coordinates (lat, lon, acc).
+ * 
+ * @param {object} params
+ * @param {string} params.runId
+ * @param {number} params.tabId
+ * @param {object} params.jobSettings
+ * @returns {Promise<{ valid: boolean, reason?: string }>}
+ */
+export async function verifyLocationIntegrity({ runId, tabId, jobSettings }) {
+  const state = await getJobState();
+
+  // 1. Verify runId validity
+  if (runId && state.runId !== runId) {
+    return { valid: false, reason: 'RUN_INVALIDATED' };
+  }
+
+  // 2. Verify status validity (respecting STOPPED / PAUSED / BLOCKED priority)
+  if (state.status === 'STOPPED') {
+    return { valid: false, reason: 'STATUS_STOPPED' };
+  }
+  if (state.status === 'PAUSED') {
+    return { valid: false, reason: 'STATUS_PAUSED' };
+  }
+  if (state.status === 'BLOCKED') {
+    return { valid: false, reason: 'STATUS_BLOCKED' };
+  }
+  if (state.status !== 'RUNNING') {
+    return { valid: false, reason: 'STATUS_CHANGED' };
+  }
+
+  // If job does not use location, integrity check is valid
+  if (!jobSettings || !jobSettings.useLocation) {
+    return { valid: true };
+  }
+
+  const expectedTabId = tabId || state.searchTabId;
+  const applied = activeAppliedLocation || state.appliedLocation;
+
+  // 3. Verify location state in storage
+  if (!state.locationApplied || state.locationState !== LOCATION_STATES.ACTIVE) {
+    await logLocationIntegrityCheck({
+      runId,
+      expectedTabId,
+      appliedTabId: state.locationTabId,
+      expectedLat: jobSettings.latitude,
+      expectedLon: jobSettings.longitude,
+      appliedLat: applied?.latitude,
+      appliedLon: applied?.longitude,
+      debuggerAttached: Boolean(activeDebuggerTabId && activeDebuggerTabId === expectedTabId),
+      runtimeStatus: state.status,
+      commitAllowed: false,
+      failureReason: 'LOCATION_NOT_ACTIVE'
+    });
+    return { valid: false, reason: 'LOCATION_NOT_ACTIVE' };
+  }
+
+  // 4. Verify search tab ID matches
+  if (!expectedTabId || (state.searchTabId && state.searchTabId !== expectedTabId) || (state.locationTabId && state.locationTabId !== expectedTabId)) {
+    await logLocationIntegrityCheck({
+      runId,
+      expectedTabId,
+      appliedTabId: state.locationTabId,
+      expectedLat: jobSettings.latitude,
+      expectedLon: jobSettings.longitude,
+      appliedLat: applied?.latitude,
+      appliedLon: applied?.longitude,
+      debuggerAttached: Boolean(activeDebuggerTabId && activeDebuggerTabId === expectedTabId),
+      runtimeStatus: state.status,
+      commitAllowed: false,
+      failureReason: 'TAB_MISMATCH'
+    });
+    return { valid: false, reason: 'TAB_MISMATCH' };
+  }
+
+  // 5. Verify in-memory debugger state
+  if (!activeDebuggerTabId || activeDebuggerTabId !== expectedTabId) {
+    await logLocationIntegrityCheck({
+      runId,
+      expectedTabId,
+      appliedTabId: activeDebuggerTabId,
+      expectedLat: jobSettings.latitude,
+      expectedLon: jobSettings.longitude,
+      appliedLat: applied?.latitude,
+      appliedLon: applied?.longitude,
+      debuggerAttached: false,
+      runtimeStatus: state.status,
+      commitAllowed: false,
+      failureReason: 'DEBUGGER_DETACHED'
+    });
+    return { valid: false, reason: 'DEBUGGER_DETACHED' };
+  }
+
+  // 6. Verify real-time debugger attachment via CDP targets
+  const isAttached = await isDebuggerAttachedToTab(expectedTabId);
+  if (!isAttached) {
+    await logLocationIntegrityCheck({
+      runId,
+      expectedTabId,
+      appliedTabId: activeDebuggerTabId,
+      expectedLat: jobSettings.latitude,
+      expectedLon: jobSettings.longitude,
+      appliedLat: applied?.latitude,
+      appliedLon: applied?.longitude,
+      debuggerAttached: false,
+      runtimeStatus: state.status,
+      commitAllowed: false,
+      failureReason: 'DEBUGGER_NOT_ATTACHED'
+    });
+    return { valid: false, reason: 'DEBUGGER_NOT_ATTACHED' };
+  }
+
+  // 7. Verify appliedLocation fingerprint matches jobSettings
+  if (!applied || !isLocationFingerprintMatch(applied, expectedTabId, jobSettings.latitude, jobSettings.longitude, jobSettings.accuracy || 20)) {
+    await logLocationIntegrityCheck({
+      runId,
+      expectedTabId,
+      appliedTabId: applied?.tabId,
+      expectedLat: jobSettings.latitude,
+      expectedLon: jobSettings.longitude,
+      appliedLat: applied?.latitude,
+      appliedLon: applied?.longitude,
+      debuggerAttached: true,
+      runtimeStatus: state.status,
+      commitAllowed: false,
+      failureReason: 'FINGERPRINT_MISMATCH'
+    });
+    return { valid: false, reason: 'FINGERPRINT_MISMATCH' };
+  }
+
+  // Passed all checks!
+  await logLocationIntegrityCheck({
+    runId,
+    expectedTabId,
+    appliedTabId: applied.tabId,
+    expectedLat: jobSettings.latitude,
+    expectedLon: jobSettings.longitude,
+    appliedLat: applied.latitude,
+    appliedLon: applied.longitude,
+    debuggerAttached: true,
+    runtimeStatus: state.status,
+    commitAllowed: true,
+    failureReason: null
+  });
+
+  return { valid: true };
+}
+
+/**
+ * Authoritative single commit gate for keyword ranking results.
+ * Guarantees that no result is ever saved and currentIndex is never incremented
+ * unless runtime state and location integrity are 100% valid at the exact moment of commit.
+ * 
+ * @param {string} runId
+ * @param {object} resultItem
+ * @param {number} queueIndex
+ * @param {number} tabId
+ * @param {object} jobSettings
+ * @returns {Promise<{ committed: boolean, reason?: string, isComplete?: boolean, nextStatus?: string, state?: object }>}
+ */
+export async function commitKeywordResult(runId, resultItem, queueIndex, tabId, jobSettings) {
+  const latestState = await getJobState();
+
+  if (latestState.runId !== runId) {
+    await debugLog(`[LRC Commit Gate] Rejected: runId mismatch (expected ${runId}, got ${latestState.runId})`);
+    return { committed: false, reason: 'RUN_INVALIDATED' };
+  }
+
+  if (latestState.status === 'STOPPED') {
+    await debugLog('[LRC Commit Gate] Rejected: job is STOPPED');
+    return { committed: false, reason: 'STOPPED' };
+  }
+
+  if (latestState.status === 'PAUSED') {
+    await debugLog('[LRC Commit Gate] Rejected: job is PAUSED');
+    return { committed: false, reason: 'PAUSED' };
+  }
+
+  if (latestState.status === 'BLOCKED') {
+    await debugLog('[LRC Commit Gate] Rejected: job is BLOCKED');
+    return { committed: false, reason: 'BLOCKED' };
+  }
+
+  if (latestState.status !== 'RUNNING') {
+    await debugLog(`[LRC Commit Gate] Rejected: status is ${latestState.status}`);
+    return { committed: false, reason: latestState.status };
+  }
+
+  // Final location integrity check at the exact moment of commit
+  if (jobSettings && jobSettings.useLocation) {
+    const integrity = await verifyLocationIntegrity({
+      runId,
+      tabId,
+      jobSettings
+    });
+
+    if (!integrity.valid) {
+      const errorMsg = 'Location override was lost before the ranking result could be verified. This keyword was not saved.';
+      await debugLog(`[LRC Commit Gate FAIL-CLOSED] ${errorMsg} Reason: ${integrity.reason}`);
+
+      // Set BLOCKED state safely if not already stopped or paused
+      const checkState = await getJobState();
+      if (checkState.runId === runId && checkState.status !== 'STOPPED' && checkState.status !== 'PAUSED') {
+        await saveJobState({
+          status: 'BLOCKED',
+          errorMessage: errorMsg,
+          lastError: errorMsg,
+          locationApplied: false,
+          locationState: LOCATION_STATES.FAILED,
+          locationTabId: null,
+          appliedLocation: null,
+          currentKeyword: null,
+          currentSerpOffset: 0,
+          checkedDepth: 0,
+          seenUrls: []
+        });
+        broadcastMessage({
+          action: 'JOB_BLOCKED',
+          message: errorMsg,
+          reason: integrity.reason
+        });
+        broadcastMessage({
+          action: 'LOCATION_STATUS_UPDATE',
+          status: LOCATION_STATES.FAILED,
+          error: errorMsg
+        });
+      }
+
+      return { committed: false, reason: integrity.reason || 'LOCATION_LOST' };
+    }
+  }
+
+  // Safe to commit: update results and advance currentIndex
+  const item = latestState.queue[queueIndex];
+  const itemOriginalIndex = (item && item.originalIndex !== undefined) ? item.originalIndex : queueIndex;
+
+  const finalResultItem = {
+    ...resultItem,
+    originalIndex: itemOriginalIndex,
+    projectId: latestState.projectId || null
+  };
+
+  const updatedResults = [...(latestState.results || [])];
+  while (updatedResults.length <= itemOriginalIndex) {
+    updatedResults.push(null);
+  }
+  updatedResults[itemOriginalIndex] = finalResultItem;
+
+  const nextIndex = queueIndex + 1;
+  const isComplete = nextIndex >= latestState.queue.length;
+  const nextStatus = isComplete ? 'COMPLETED' : 'RUNNING';
+
+  const updatedState = await saveJobState({
+    results: updatedResults,
+    currentIndex: nextIndex,
+    status: nextStatus,
+    currentKeyword: null,
+    currentSerpOffset: 0,
+    checkedDepth: 0,
+    seenUrls: []
+  });
+
+  broadcastMessage({
+    action: 'PROGRESS_UPDATE',
+    state: updatedState
+  });
+
+  return { committed: true, isComplete, nextStatus, state: updatedState };
+}
+
+// Test harness getters / setters for internal debugger state
+export function getActiveDebuggerTabId() {
+  return activeDebuggerTabId;
+}
+export function setActiveDebuggerTabId(tabId) {
+  activeDebuggerTabId = tabId;
+}
+export function getActiveAppliedLocation() {
+  return activeAppliedLocation;
+}
+export function setActiveAppliedLocation(loc) {
+  activeAppliedLocation = loc;
+}
 
 /**
  * Authoritative location override check and reapply.
@@ -311,7 +735,9 @@ async function ensureLocationApplied(tabId, runId, settings) {
     activeAppliedLocation = null;
     await saveJobState({
       locationApplied: false,
-      locationState: LOCATION_STATES.FAILED
+      locationState: LOCATION_STATES.FAILED,
+      appliedLocation: null,
+      locationTabId: null
     });
     broadcastMessage({
       action: 'LOCATION_STATUS_UPDATE',
@@ -546,8 +972,9 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
 
     // FAIL-CLOSED GUARD: If location simulation is enabled, verify CDP override is still attached & active
     if (settings && settings.useLocation) {
-      if (!activeDebuggerTabId || activeDebuggerTabId !== tabId || !activeAppliedLocation) {
-        await debugLog('[LRC FAIL-CLOSED] Debugger detached or location override lost before navigation.');
+      const locCheck = await verifyLocationIntegrity({ runId, tabId, jobSettings: settings });
+      if (!locCheck.valid) {
+        await debugLog(`[LRC FAIL-CLOSED] Debugger detached or location override lost before navigation: ${locCheck.reason}`);
         return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
       }
     }
@@ -558,8 +985,9 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
 
       // Verify override immediately after navigation
       if (settings && settings.useLocation) {
-        if (!activeDebuggerTabId || activeDebuggerTabId !== tabId || !activeAppliedLocation) {
-          await debugLog('[LRC FAIL-CLOSED] Location override lost during/after navigation.');
+        const postNavLoc = await verifyLocationIntegrity({ runId, tabId, jobSettings: settings });
+        if (!postNavLoc.valid) {
+          await debugLog(`[LRC FAIL-CLOSED] Location override lost during/after navigation: ${postNavLoc.reason}`);
           return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
         }
       }
@@ -585,6 +1013,26 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
         debug: settings.debugMode,
         timeout: 8000
       });
+
+      // Post-parse location integrity guard:
+      // If location override was lost while content script was parsing, FAIL IMMEDIATELY.
+      if (settings && settings.useLocation) {
+        const postParseIntegrity = await verifyLocationIntegrity({
+          runId,
+          tabId,
+          jobSettings: settings
+        });
+        if (!postParseIntegrity.valid) {
+          await debugLog(`[LRC FAIL-CLOSED] Location override lost while parsing SERP: ${postParseIntegrity.reason}`);
+          return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
+        }
+      }
+
+      // Check interruption reason after parse
+      const postParseReason = await getInterruptionReason(runId);
+      if (postParseReason) {
+        return { resultItem: null, interrupted: true, reason: postParseReason };
+      }
 
       // 5. Handle CAPTCHA / Unusual Traffic
       if (response && response.status === 'BLOCKED') {
@@ -665,14 +1113,32 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
           if (!delayRes.completed) {
             return { resultItem: null, interrupted: true, reason: delayRes.reason || 'PAUSED' };
           }
+
+          // Verify location integrity after pagination delay
+          if (settings && settings.useLocation) {
+            const paginationIntegrity = await verifyLocationIntegrity({
+              runId,
+              tabId,
+              jobSettings: settings
+            });
+            if (!paginationIntegrity.valid) {
+              await debugLog(`[LRC FAIL-CLOSED] Location override lost during pagination delay: ${paginationIntegrity.reason}`);
+              return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
+            }
+          }
         }
       } else {
         consecutiveEmptyPages++;
       }
     } catch (err) {
       if (settings && settings.useLocation) {
-        if (!activeDebuggerTabId || activeDebuggerTabId !== tabId || !activeAppliedLocation) {
-          await debugLog('[LRC FAIL-CLOSED] Error occurred while location override was lost.');
+        const catchIntegrity = await verifyLocationIntegrity({
+          runId,
+          tabId,
+          jobSettings: settings
+        });
+        if (!catchIntegrity.valid) {
+          await debugLog(`[LRC FAIL-CLOSED] Error occurred while location override was lost: ${catchIntegrity.reason}`);
           return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
         }
       }
@@ -684,6 +1150,17 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
       consecutiveEmptyPages++;
 
       if (consecutiveEmptyPages >= 2 && cumulativeResults.length === 0) {
+        if (settings && settings.useLocation) {
+          const techErrIntegrity = await verifyLocationIntegrity({
+            runId,
+            tabId,
+            jobSettings: settings
+          });
+          if (!techErrIntegrity.valid) {
+            return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
+          }
+        }
+
         // Genuine technical error
         return {
           resultItem: {
@@ -704,6 +1181,19 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
           interrupted: false
         };
       }
+    }
+  }
+
+  // Final integrity check before determining and returning keyword ranking
+  if (settings && settings.useLocation) {
+    const finalIntegrity = await verifyLocationIntegrity({
+      runId,
+      tabId,
+      jobSettings: settings
+    });
+    if (!finalIntegrity.valid) {
+      await debugLog(`[LRC FAIL-CLOSED] Final location check failed before result return: ${finalIntegrity.reason}`);
+      return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
     }
   }
 
@@ -818,6 +1308,11 @@ async function runQueueLoop(runId) {
         await saveJobState({
           status: 'BLOCKED',
           errorMessage: errorMsg,
+          lastError: errorMsg,
+          locationApplied: false,
+          locationState: LOCATION_STATES.FAILED,
+          locationTabId: null,
+          appliedLocation: null,
           currentKeyword: null,
           currentSerpOffset: 0,
           checkedDepth: 0,
@@ -840,7 +1335,7 @@ async function runQueueLoop(runId) {
     // Check ranks across pagination using jobSettings
     const { resultItem, interrupted, reason } = await checkKeywordRanks(item, tab.id, jobSettings, runId);
 
-    // BUG 1 FIX: If interrupted, DO NOT mark keyword as ERROR and DO NOT advance currentIndex!
+    // If interrupted, DO NOT mark keyword as ERROR and DO NOT advance currentIndex!
     if (interrupted) {
       if (reason === 'STOPPED') {
         await debugLog(`[LRC] Keyword check stopped by user. Halting.`);
@@ -850,9 +1345,6 @@ async function runQueueLoop(runId) {
       if (reason === 'PAUSED') {
         await debugLog(`[LRC] Keyword check paused on "${item.keyword}". Preserving currentIndex ${index}.`);
         
-        // BUG 2 FIX: Re-read state before writing PAUSED.
-        // If the user already clicked RESUME (status === 'RUNNING'), DO NOT write PAUSED.
-        // If the state is STOPPED or runId changed, DO NOT mutate anything.
         const latestOnPause = await getJobState();
         if (latestOnPause.runId === runId && latestOnPause.status === 'PAUSED') {
           await saveJobState({
@@ -864,7 +1356,6 @@ async function runQueueLoop(runId) {
           });
           broadcastMessage({ action: 'PROGRESS_UPDATE', state: await getJobState() });
         } else if (latestOnPause.runId === runId && latestOnPause.status === 'RUNNING') {
-          // User already resumed while exiting: clean transient pagination counters without overwriting RUNNING
           await saveJobState({
             currentKeyword: null,
             currentSerpOffset: 0,
@@ -876,13 +1367,18 @@ async function runQueueLoop(runId) {
       }
 
       if (reason === 'LOCATION_LOST') {
-        const errorMsg = 'Location override was lost. Rank checking stopped to prevent inaccurate results.';
+        const errorMsg = 'Location override was lost. Rank checking has been blocked to prevent inaccurate results.';
         await debugLog(`[LRC FAIL-CLOSED] ${errorMsg}`);
         const checkState = await getJobState();
-        if (checkState.runId === runId && checkState.status !== 'STOPPED') {
+        if (checkState.runId === runId && checkState.status !== 'STOPPED' && checkState.status !== 'PAUSED') {
           await saveJobState({
             status: 'BLOCKED',
             errorMessage: errorMsg,
+            lastError: errorMsg,
+            locationApplied: false,
+            locationState: LOCATION_STATES.FAILED,
+            locationTabId: null,
+            appliedLocation: null,
             currentKeyword: null,
             currentSerpOffset: 0,
             checkedDepth: 0,
@@ -902,7 +1398,6 @@ async function runQueueLoop(runId) {
       }
 
       if (reason === 'BLOCKED') {
-        // BUG 2 FIX: Verify state priority before writing BLOCKED (STOPPED & PAUSED have higher priority)
         const checkState = await getJobState();
         if (checkState.runId === runId && checkState.status !== 'STOPPED' && checkState.status !== 'PAUSED') {
           await saveJobState({
@@ -929,63 +1424,14 @@ async function runQueueLoop(runId) {
       break;
     }
 
-    // Re-verify storage state before committing result (BUG 2 & 3 FIX)
-    const latestState = await getJobState();
-
-    if (latestState.runId !== runId) {
-      await debugLog('[LRC] runId mismatch after keyword check. Aborting without mutating state.');
-      break;
-    }
-    if (latestState.status === 'STOPPED') {
-      await debugLog('[LRC] State is STOPPED. Aborting without mutating state.');
+    // Authoritative single commit gate: verifies location integrity at moment of commit
+    const commitOutcome = await commitKeywordResult(runId, resultItem, index, tab.id, jobSettings);
+    if (!commitOutcome.committed) {
+      await debugLog(`[LRC] Result commit prevented: ${commitOutcome.reason}. Halting queue loop.`);
       break;
     }
 
-    const wasPaused = (latestState.status === 'PAUSED' || latestState.status === 'BLOCKED');
-
-    // Only commit a finished real result (or real technical failure)
-    const updatedResults = [...(latestState.results || [])];
-    const itemOriginalIndex = (item.originalIndex !== undefined) ? item.originalIndex : index;
-    const finalResultItem = {
-      ...resultItem,
-      originalIndex: itemOriginalIndex,
-      projectId: latestState.projectId || state.projectId || null
-    };
-
-    while (updatedResults.length <= itemOriginalIndex) {
-      updatedResults.push(null);
-    }
-    updatedResults[itemOriginalIndex] = finalResultItem;
-
-    const nextIndex = index + 1;
-    const isComplete = nextIndex >= latestState.queue.length;
-
-    // Status transition: NEVER overwrite PAUSED or BLOCKED with RUNNING
-    let nextStatus;
-    if (wasPaused) {
-      nextStatus = latestState.status;
-    } else if (isComplete) {
-      nextStatus = 'COMPLETED';
-    } else {
-      nextStatus = 'RUNNING';
-    }
-
-    await saveJobState({
-      results: updatedResults,
-      currentIndex: nextIndex,
-      status: nextStatus,
-      currentKeyword: null,
-      currentSerpOffset: 0,
-      checkedDepth: 0,
-      seenUrls: []
-    });
-
-    broadcastMessage({
-      action: 'PROGRESS_UPDATE',
-      state: await getJobState()
-    });
-
-    if (wasPaused || isComplete) {
+    if (commitOutcome.isComplete || commitOutcome.nextStatus !== 'RUNNING') {
       break;
     }
 
