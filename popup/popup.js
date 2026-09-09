@@ -1,6 +1,6 @@
 /**
  * popup.js
- * User interface controller for Local Rank Checker.
+ * User interface controller for SERPTrack.
  * Communicates with background service worker and renders live state.
  */
 

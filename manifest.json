@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Local Rank Checker",
+  "name": "SERPTrack",
   "version": "1.0.0",
-  "description": "Automate manual SEO keyword ranking on Google for weekly agency workflows.",
+  "description": "SERPTrack - Local SEO Rank Checker & Agency Keyword Tracking.",
   "permissions": [
     "storage",
     "tabs",

@@ -1,6 +1,6 @@
 /**
  * projectManager.js
- * Local client/project management system for Local Rank Checker.
+ * Local client/project management system for SERPTrack.
  * Handles projects, keyword queues, weekly snapshots, and import/export.
  * All data remains 100% local in chrome.storage.local.
  */
@@ -419,7 +419,7 @@ export async function exportProjectJson(projectId) {
 
   const exportObj = {
     schemaVersion: '1.0',
-    exportType: 'LOCAL_RANK_CHECKER_PROJECT',
+    exportType: 'SERPTRACK_PROJECT',
     exportedAt: new Date().toISOString(),
     project: {
       projectName: proj.config.projectName,

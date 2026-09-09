@@ -1,6 +1,6 @@
 /**
  * dashboard.js
- * Pro Dashboard Controller for Local Rank Checker.
+ * Pro Dashboard Controller for SERPTrack.
  * Handles 20–80 keyword batch management, local project management,
  * CDP location simulation controls, results table, and exports.
  */

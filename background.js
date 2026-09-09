@@ -1,6 +1,6 @@
 /**
  * background.js
- * Hardened Service Worker for Local Rank Checker (Manifest V3).
+ * Hardened Service Worker for SERPTrack (Manifest V3).
  * 
  * Race-condition fixes:
  * 1. Fast Pause → Resume lifecycle race: ensureQueueRunning waits for old loop shutdown before starting a new loop.

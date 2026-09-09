@@ -1,4 +1,4 @@
-# Local Rank Checker (Chrome Extension)
+# SERPTrack (Chrome Extension)
 
 A local-only Chrome Extension (Manifest V3) designed for SEO agencies to automate Monday morning keyword ranking checks on Google. 
 
@@ -17,7 +17,7 @@ Compares current Google organic rankings against previous positions, identifies 
    D:\EXTEN
    ```
 6. Click **Select Folder**.
-7. In Chrome's toolbar, click the Puzzle icon (Extensions) and **Pin** "Local Rank Checker" for quick access.
+7. In Chrome's toolbar, click the Puzzle icon (Extensions) and **Pin** "SERPTrack" for quick access.
 
 ---
 
@@ -38,7 +38,7 @@ openai chatgpt	https://chatgpt.com	1
 *(You can also replace these with your agency's actual clients and target landing pages).*
 
 ### Testing Steps:
-1. Click the **Local Rank Checker** icon in your Chrome toolbar.
+1. Click the **SERPTrack** icon in your Chrome toolbar.
 2. Paste the 5 rows above into the textarea.
 3. Select your Google Domain (default: `google.com`).
 4. Set Delay (default is `8` seconds, minimum is `5` seconds).
@@ -116,7 +116,7 @@ If something does not appear as expected, inspect the relevant component:
 
 2. **Background Service Worker**:
    - Go to `chrome://extensions`.
-   - Find **Local Rank Checker**.
+   - Find **SERPTrack**.
    - Click the blue link: **service worker** (Inspect views: service worker).
    - In the DevTools window that opens, view the **Console** tab for background queue, CDP attachment, and navigation logs.
 
