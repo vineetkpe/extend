@@ -16,13 +16,21 @@ import {
   isLocationFingerprintMatch
 } from './utils/locationValidator.js';
 import {
+  getPreferences,
+  savePreferences,
   getSettings,
   saveSettings,
+  getRuntimeState,
+  saveRuntimeState,
   getJobState,
   saveJobState,
   resetJobState,
   clearSessionData,
-  LOCATION_STATES
+  isSessionStorageAvailable,
+  getSessionStorage,
+  LOCATION_STATES,
+  SESSION_STORAGE_UNAVAILABLE_ERROR,
+  DEFAULT_JOB_SETTINGS
 } from './utils/storage.js';
 import { getProjects } from './utils/projectManager.js';
 
@@ -760,7 +768,7 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
 async function runQueueLoop(runId) {
   while (true) {
     const state = await getJobState();
-    const settings = await getSettings();
+    const jobSettings = state.jobSettings || DEFAULT_JOB_SETTINGS;
 
     // Guard: must match current active runId and status must be RUNNING
     if (state.runId !== runId || state.status !== 'RUNNING') {
@@ -786,11 +794,13 @@ async function runQueueLoop(runId) {
 
     await debugLog(`[LRC] Processing keyword ${index + 1}/${state.queue.length}: "${item.keyword}"`);
 
-    // Ensure visible search tab exists
+    // Ensure visible search tab exists using jobSettings
     let tab;
     try {
-      tab = await ensureSearchTab(state.searchTabId, settings);
-      await saveJobState({ searchTabId: tab.id });
+      tab = await ensureSearchTab(state.searchTabId, jobSettings);
+      if (tab.id !== state.searchTabId) {
+        await saveJobState({ searchTabId: tab.id });
+      }
     } catch (err) {
       console.error('[LRC] Could not establish search tab:', err);
       await saveJobState({
@@ -801,8 +811,8 @@ async function runQueueLoop(runId) {
     }
 
     // FAIL-CLOSED GUARD: If location simulation is enabled, verify CDP override succeeded
-    if (settings && settings.useLocation) {
-      const locResult = await ensureLocationApplied(tab.id, runId, settings);
+    if (jobSettings && jobSettings.useLocation) {
+      const locResult = await ensureLocationApplied(tab.id, runId, jobSettings);
       if (!locResult.success) {
         const errorMsg = 'Location override was lost. Rank checking stopped to prevent inaccurate results.';
         await debugLog(`[LRC FAIL-CLOSED] ${errorMsg} Error: ${locResult.error}`);
@@ -828,8 +838,8 @@ async function runQueueLoop(runId) {
       }
     }
 
-    // Check ranks across pagination
-    const { resultItem, interrupted, reason } = await checkKeywordRanks(item, tab.id, settings, runId);
+    // Check ranks across pagination using jobSettings
+    const { resultItem, interrupted, reason } = await checkKeywordRanks(item, tab.id, jobSettings, runId);
 
     // BUG 1 FIX: If interrupted, DO NOT mark keyword as ERROR and DO NOT advance currentIndex!
     if (interrupted) {
@@ -981,7 +991,7 @@ async function runQueueLoop(runId) {
     }
 
     // Inter-keyword delay
-    const delaySec = Math.max(5, Number(settings.delaySeconds) || 8);
+    const delaySec = Math.max(5, Number(jobSettings.delaySeconds) || 8);
     await debugLog(`[LRC] Waiting ${delaySec}s before next keyword...`);
 
     const delayRes = await waitForDelay(runId, delaySec * 1000);
@@ -1063,19 +1073,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     try {
       if (request.action === 'GET_STATE') {
         const state = await getJobState();
-        const settings = await getSettings();
-        sendResponse({ state, settings });
+        const preferences = await getPreferences();
+        sendResponse({ state, settings: preferences, preferences });
         return;
       }
 
       if (request.action === 'START_JOB') {
-        const { queue, settings, projectId } = request;
-        if (settings) {
-          await saveSettings(settings);
+        if (!isSessionStorageAvailable()) {
+          sendResponse({
+            success: false,
+            error: SESSION_STORAGE_UNAVAILABLE_ERROR,
+            message: SESSION_STORAGE_UNAVAILABLE_ERROR
+          });
+          return;
         }
 
+        const { queue, settings, projectId } = request;
+        if (!queue || queue.length === 0) {
+          sendResponse({ success: false, message: 'Queue is empty.' });
+          return;
+        }
+
+        const rawDomain = (settings && settings.googleDomain) || 'google.com';
+        const rawDelay = Math.max(5, parseInt(settings && settings.delaySeconds, 10) || 8);
+        const rawMaxDepth = Math.max(10, parseInt(settings && settings.maxPosition, 10) || 50);
+        const useLocation = Boolean(settings && settings.useLocation);
+
+        let validatedLat = '';
+        let validatedLon = '';
+        let validatedAcc = 20;
+        let locName = (settings && settings.locationName) || '';
+
         // Validate location coordinates if location simulation is enabled
-        if (settings && settings.useLocation) {
+        if (useLocation) {
           const locVal = validateCoordinates(settings.latitude, settings.longitude, settings.accuracy);
           if (!locVal.valid) {
             sendResponse({
@@ -1085,8 +1115,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
             return;
           }
+          validatedLat = String(locVal.latitude);
+          validatedLon = String(locVal.longitude);
+          validatedAcc = locVal.accuracy;
 
-          // Bug 1 Fix: Compare project coordinates with currently applied coordinates and reapply if different
+          // Compare project coordinates with currently applied coordinates and reapply if different
           if (
             !activeAppliedLocation ||
             activeAppliedLocation.latitude !== locVal.latitude ||
@@ -1096,6 +1129,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             activeAppliedLocation = null;
           }
         }
+
+        const activeJobSettings = {
+          googleDomain: rawDomain,
+          delaySeconds: rawDelay,
+          maxPosition: rawMaxDepth,
+          debugMode: Boolean(settings && settings.debugMode),
+          useLocation: useLocation,
+          latitude: validatedLat,
+          longitude: validatedLon,
+          accuracy: validatedAcc,
+          locationName: locName
+        };
+
+        // Save harmless general preferences to local storage (only whitelisted keys)
+        await savePreferences({
+          googleDomain: activeJobSettings.googleDomain,
+          delaySeconds: activeJobSettings.delaySeconds,
+          maxPosition: activeJobSettings.maxPosition,
+          debugMode: activeJobSettings.debugMode
+        });
 
         const runId = generateRunId();
 
@@ -1125,6 +1178,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           queue: (queue || []).map((q, idx) => ({ ...q, originalIndex: idx })),
           currentIndex: 0,
           results: prefilledResults,
+          jobSettings: activeJobSettings,
           currentKeyword: null,
           currentSerpOffset: 0,
           checkedDepth: 0,
@@ -1186,6 +1240,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           queue: failedItems,
           currentIndex: 0,
           results: currentResults,
+          jobSettings: currentState.jobSettings || DEFAULT_JOB_SETTINGS,
           currentKeyword: null,
           currentSerpOffset: 0,
           checkedDepth: 0,
@@ -1280,14 +1335,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
-        await saveSettings({
-          useLocation: true,
-          latitude: String(validation.latitude),
-          longitude: String(validation.longitude),
-          accuracy: validation.accuracy,
-          locationName: loc.locationName || ''
-        });
-
         const state = await getJobState();
         let targetTabId = state.searchTabId;
         let tab = null;
@@ -1299,7 +1346,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           }
         }
 
-        const settings = await getSettings();
+        const prefs = await getPreferences();
+        const domain = (state.jobSettings && state.jobSettings.googleDomain) || prefs.googleDomain || 'google.com';
+
         if (tab) {
           try {
             await applyGeolocationOverride(tab.id, {
@@ -1307,7 +1356,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
               longitude: validation.longitude,
               accuracy: validation.accuracy,
               locationName: loc.locationName || ''
-            }, settings.googleDomain || 'google.com');
+            }, domain);
             sendResponse({
               success: true,
               applied: true,
@@ -1321,7 +1370,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return;
           }
         } else {
-          // Tab not created yet; save configured state truthfully
+          // Tab not created yet; save configured state truthfully in session storage
           await saveJobState({
             locationConfigured: true,
             locationApplied: false,
@@ -1356,9 +1405,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       if (request.action === 'RESET_LOCATION') {
         await clearGeolocationOverride();
-        await saveSettings({
-          useLocation: false
-        });
         sendResponse({ success: true });
         return;
       }

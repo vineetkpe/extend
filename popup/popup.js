@@ -13,7 +13,7 @@
 
 import { parseInputRows } from '../utils/parser.js';
 import { exportToTsv, exportToCsv, exportToCurrentPositionsOnly, copyToClipboard } from '../utils/exporter.js';
-import { getInputText, saveInputText } from '../utils/storage.js';
+import { getInputText, saveInputText, isSessionStorageAvailable, SESSION_STORAGE_UNAVAILABLE_ERROR } from '../utils/storage.js';
 import { validateCoordinates } from '../utils/locationValidator.js';
 import { getProjects, getActiveProject, setActiveProjectId, updateProject } from '../utils/projectManager.js';
 
@@ -460,6 +460,16 @@ function validateInput() {
  * Initializes state by querying the background worker and loading active project
  */
 async function initialize() {
+  if (!isSessionStorageAvailable()) {
+    const alertEl = document.getElementById('sessionStorageAlert');
+    if (alertEl) {
+      alertEl.style.display = 'block';
+    }
+    showToast(SESSION_STORAGE_UNAVAILABLE_ERROR);
+    if (btnStart) btnStart.disabled = true;
+    return;
+  }
+
   // Populate Project Selector
   try {
     const projects = await getProjects();

@@ -10,7 +10,7 @@
  * - Import parses JSON with prototype-pollution guards and strict schema/URL validation.
  */
 
-import { STORAGE_KEYS, getSessionStorage } from './storage.js';
+import { STORAGE_KEYS, getSessionStorage, assertSessionStorage, SESSION_STORAGE_UNAVAILABLE_ERROR } from './storage.js';
 import { isValidUrlOrDomain } from './parser.js';
 import { validateCoordinates } from './locationValidator.js';
 
@@ -74,34 +74,40 @@ export function isSafeTargetUrl(urlStr) {
 
 /**
  * Retrieves all projects from session storage. Initializes default session project if empty.
+ * Fails closed if session storage is unavailable.
  * @returns {Promise<Object<string, object>>}
  */
 export async function getProjects() {
-  try {
-    const store = getSessionStorage();
-    if (!store) return { [DEFAULT_PROJECT_ID]: { ...DEFAULT_PROJECT } };
+  const store = assertSessionStorage();
 
-    const data = await store.get(STORAGE_KEYS.PROJECTS);
-    let projects = data ? data[STORAGE_KEYS.PROJECTS] : null;
+  const data = await store.get(STORAGE_KEYS.PROJECTS);
+  let projects = data ? data[STORAGE_KEYS.PROJECTS] : null;
 
-    if (!projects || typeof projects !== 'object' || Object.keys(projects).length === 0) {
-      projects = { [DEFAULT_PROJECT_ID]: { ...DEFAULT_PROJECT } };
-      await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
-    }
-
-    // Ensure all projects have consistent properties
-    Object.keys(projects).forEach(pId => {
-      if (projects[pId] && projects[pId].config) {
-        projects[pId].id = pId;
-        projects[pId].projectId = pId;
-      }
-    });
-
-    return projects;
-  } catch (err) {
-    console.error('[Projects] Error reading session projects:', err);
-    return { [DEFAULT_PROJECT_ID]: { ...DEFAULT_PROJECT } };
+  if (!projects || typeof projects !== 'object' || Object.keys(projects).length === 0) {
+    projects = { [DEFAULT_PROJECT_ID]: { ...DEFAULT_PROJECT } };
+    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
   }
+
+  // Ensure all projects have consistent properties
+  Object.keys(projects).forEach(pId => {
+    if (projects[pId] && projects[pId].config) {
+      projects[pId].id = pId;
+      projects[pId].projectId = pId;
+    }
+  });
+
+  return projects;
+}
+
+/**
+ * Saves projects map directly to session storage.
+ * @param {Object<string, object>} projects
+ * @returns {Promise<Object<string, object>>}
+ */
+export async function saveProjects(projects) {
+  const store = assertSessionStorage();
+  await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  return projects;
 }
 
 /**
@@ -109,14 +115,9 @@ export async function getProjects() {
  * @returns {Promise<string>}
  */
 export async function getActiveProjectId() {
-  try {
-    const store = getSessionStorage();
-    if (!store) return DEFAULT_PROJECT_ID;
-    const data = await store.get(STORAGE_KEYS.ACTIVE_PROJECT_ID);
-    return (data && data[STORAGE_KEYS.ACTIVE_PROJECT_ID]) || DEFAULT_PROJECT_ID;
-  } catch (err) {
-    return DEFAULT_PROJECT_ID;
-  }
+  const store = assertSessionStorage();
+  const data = await store.get(STORAGE_KEYS.ACTIVE_PROJECT_ID);
+  return (data && data[STORAGE_KEYS.ACTIVE_PROJECT_ID]) || DEFAULT_PROJECT_ID;
 }
 
 /**
@@ -125,13 +126,8 @@ export async function getActiveProjectId() {
  * @returns {Promise<void>}
  */
 export async function setActiveProjectId(projectId) {
-  try {
-    const store = getSessionStorage();
-    if (!store) return;
-    await store.set({ [STORAGE_KEYS.ACTIVE_PROJECT_ID]: projectId });
-  } catch (err) {
-    console.error('[Projects] Error saving active project ID:', err);
-  }
+  const store = assertSessionStorage();
+  await store.set({ [STORAGE_KEYS.ACTIVE_PROJECT_ID]: projectId });
 }
 
 export const setActiveProject = setActiveProjectId;
@@ -177,7 +173,7 @@ export async function getActiveProject() {
  * @returns {Promise<object>} created project
  */
 export async function createProject(projectData) {
-  const store = getSessionStorage();
+  const store = assertSessionStorage();
   const projects = await getProjects();
   const projectId = 'proj_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
 
@@ -215,12 +211,10 @@ export async function createProject(projectData) {
   };
 
   projects[projectId] = newProject;
-  if (store) {
-    await store.set({
-      [STORAGE_KEYS.PROJECTS]: projects,
-      [STORAGE_KEYS.ACTIVE_PROJECT_ID]: projectId
-    });
-  }
+  await store.set({
+    [STORAGE_KEYS.PROJECTS]: projects,
+    [STORAGE_KEYS.ACTIVE_PROJECT_ID]: projectId
+  });
 
   return newProject;
 }
@@ -263,7 +257,7 @@ export async function getProjectById(projectId) {
 export async function saveProject(project) {
   const pId = project.id || project.projectId || project.config?.projectId;
   if (!pId) return;
-  const store = getSessionStorage();
+  const store = assertSessionStorage();
   const projects = await getProjects();
   const existing = projects[pId] || { config: {}, keywords: [] };
 
@@ -306,9 +300,7 @@ export async function saveProject(project) {
     keywords: project.keywords !== undefined ? project.keywords : (existing.keywords || [])
   };
 
-  if (store) {
-    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
-  }
+  await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
 }
 
 /**
@@ -318,7 +310,7 @@ export async function saveProject(project) {
  * @returns {Promise<object>} updated project
  */
 export async function updateProject(projectId, configUpdates) {
-  const store = getSessionStorage();
+  const store = assertSessionStorage();
   const projects = await getProjects();
   if (!projects[projectId]) {
     throw new Error(`Project ${projectId} not found.`);
@@ -343,9 +335,7 @@ export async function updateProject(projectId, configUpdates) {
   projects[projectId].defaultDelaySeconds = mergedConfig.defaultDelaySeconds;
   projects[projectId].defaultMaxDepth = mergedConfig.defaultMaxDepth;
 
-  if (store) {
-    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
-  }
+  await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
   return projects[projectId];
 }
 
@@ -355,7 +345,7 @@ export async function updateProject(projectId, configUpdates) {
  * @returns {Promise<{ success: boolean, newActiveId?: string }>}
  */
 export async function deleteProject(projectId) {
-  const store = getSessionStorage();
+  const store = assertSessionStorage();
   const projects = await getProjects();
   const keys = Object.keys(projects);
   if (keys.length <= 1) {
@@ -369,9 +359,7 @@ export async function deleteProject(projectId) {
     await setActiveProjectId(activeId);
   }
 
-  if (store) {
-    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
-  }
+  await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
   return { success: true, newActiveId: activeId };
 }
 
@@ -392,7 +380,7 @@ export async function getProjectKeywords(projectId) {
  * @returns {Promise<void>}
  */
 export async function saveProjectKeywords(projectId, keywordRows) {
-  const store = getSessionStorage();
+  const store = assertSessionStorage();
   const projects = await getProjects();
   if (!projects[projectId]) return;
 
@@ -401,9 +389,7 @@ export async function saveProjectKeywords(projectId, keywordRows) {
     projects[projectId].config.updatedAt = new Date().toISOString();
   }
 
-  if (store) {
-    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
-  }
+  await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
 }
 
 export const setProjectKeywords = saveProjectKeywords;
@@ -415,7 +401,7 @@ export const setProjectKeywords = saveProjectKeywords;
  * @returns {Promise<Array<object>>} updated keywords
  */
 export async function promoteCurrentToPrevious(projectId, currentResults = []) {
-  const store = getSessionStorage();
+  const store = assertSessionStorage();
   const projects = await getProjects();
   if (!projects[projectId]) return [];
 
@@ -446,9 +432,7 @@ export async function promoteCurrentToPrevious(projectId, currentResults = []) {
     projects[projectId].config.updatedAt = new Date().toISOString();
   }
 
-  if (store) {
-    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
-  }
+  await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
   return updatedKeywords;
 }
 
@@ -521,6 +505,7 @@ export async function exportProjectJson(projectId) {
  * @returns {Promise<object>} imported project
  */
 export async function importProjectJson(jsonString, customName = '') {
+  assertSessionStorage();
   if (typeof jsonString !== 'string' || !jsonString.trim()) {
     throw new Error('Project JSON string is empty.');
   }

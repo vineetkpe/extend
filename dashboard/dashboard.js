@@ -35,7 +35,11 @@ import {
 } from '../utils/projectManager.js';
 
 import { validateCoordinates } from '../utils/locationValidator.js';
-import { LOCATION_STATES } from '../utils/storage.js';
+import {
+  LOCATION_STATES,
+  isSessionStorageAvailable,
+  SESSION_STORAGE_UNAVAILABLE_ERROR
+} from '../utils/storage.js';
 
 // Application State
 let activeProject = null;
@@ -183,6 +187,20 @@ function closeConfirmModal() {
  * Initializes the dashboard.
  */
 async function initDashboard() {
+  if (!isSessionStorageAvailable()) {
+    const alertEl = document.getElementById('session-storage-alert');
+    if (alertEl) {
+      alertEl.style.display = 'flex';
+    }
+    showToast(SESSION_STORAGE_UNAVAILABLE_ERROR, 'error');
+    if (el.btnStart) el.btnStart.disabled = true;
+    if (el.btnNewProject) el.btnNewProject.disabled = true;
+    if (el.btnImportProject) el.btnImportProject.disabled = true;
+    if (el.btnEditProject) el.btnEditProject.disabled = true;
+    if (el.btnDeleteProject) el.btnDeleteProject.disabled = true;
+    return;
+  }
+
   await refreshProjectsList();
   setupEventListeners();
   await syncBackgroundState();
