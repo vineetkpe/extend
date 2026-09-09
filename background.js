@@ -3,9 +3,9 @@
  * Hardened Service Worker for Local Rank Checker (Manifest V3).
  * 
  * Race-condition fixes:
- * 1. PAUSE during active keyword preserves currentIndex without creating an ERROR result or skipping it.
- * 2. BLOCKED/CAPTCHA state verifies storage and cannot overwrite STOPPED or PAUSED.
- * 3. RESUME handles the active queue loop lifecycle promise safely (no missed runs, fully idempotent).
+ * 1. Fast Pause → Resume lifecycle race: ensureQueueRunning waits for old loop shutdown before starting a new loop.
+ * 2. Stale PAUSED write prevention: interruption handler re-reads storage and never overwrites RUNNING or STOPPED.
+ * 3. Duplicate loop prevention: authoritative loop promise token with clean single-loop ownership.
  */
 
 import { matchUrl, MATCH_TYPES, normalizeUrl } from './utils/urlNormalizer.js';
@@ -511,14 +511,29 @@ async function runQueueLoop(runId) {
 
       if (reason === 'PAUSED') {
         await debugLog(`[LRC] Keyword check paused on "${item.keyword}". Preserving currentIndex ${index}.`);
-        await saveJobState({
-          status: 'PAUSED',
-          currentKeyword: null,
-          currentSerpOffset: 0,
-          checkedDepth: 0,
-          seenUrls: []
-        });
-        broadcastMessage({ action: 'PROGRESS_UPDATE', state: await getJobState() });
+        
+        // BUG 2 FIX: Re-read state before writing PAUSED.
+        // If the user already clicked RESUME (status === 'RUNNING'), DO NOT write PAUSED.
+        // If the state is STOPPED or runId changed, DO NOT mutate anything.
+        const latestOnPause = await getJobState();
+        if (latestOnPause.runId === runId && latestOnPause.status === 'PAUSED') {
+          await saveJobState({
+            status: 'PAUSED',
+            currentKeyword: null,
+            currentSerpOffset: 0,
+            checkedDepth: 0,
+            seenUrls: []
+          });
+          broadcastMessage({ action: 'PROGRESS_UPDATE', state: await getJobState() });
+        } else if (latestOnPause.runId === runId && latestOnPause.status === 'RUNNING') {
+          // User already resumed while exiting: clean transient pagination counters without overwriting RUNNING
+          await saveJobState({
+            currentKeyword: null,
+            currentSerpOffset: 0,
+            checkedDepth: 0,
+            seenUrls: []
+          });
+        }
         break;
       }
 
@@ -611,41 +626,65 @@ async function runQueueLoop(runId) {
 }
 
 /**
- * BUG 3 FIX: Safe, idempotent queue runner lifecycle.
- * Waits for any exiting loop to cleanly shut down before starting a new one.
- * Prevents multiple concurrent loops for the same runId.
+ * Authoritative queue processor lifecycle manager (BUG 1 & DUPLICATE LOOPS FIX).
+ * Guarantees at most ONE queue processor exists for a runId.
+ * If an old processor is still shutting down (e.g. following PAUSE), waits for it
+ * to completely exit, re-verifies storage state (runId matches, status is RUNNING,
+ * queue is unfinished), and only then starts exactly one fresh queue loop.
  * 
  * @param {string} runId 
- * @returns {Promise<void>}
+ * @returns {Promise<any>}
  */
-async function startQueueProcessing(runId) {
-  // Idempotent: If loop is already running for the exact same runId, reuse promise
-  if (activeQueuePromise && activeRunId === runId) {
-    await debugLog(`[LRC] Queue loop already actively running for runId ${runId}.`);
-    return activeQueuePromise;
-  }
-
-  // If an old loop is still exiting from a previous pause or stop, wait for it to fully exit
-  if (activeQueuePromise) {
-    await debugLog(`[LRC] Waiting for previous queue loop to exit before starting runId ${runId}...`);
+async function ensureQueueRunning(runId) {
+  // 1. If an existing processor loop is still running or shutting down, wait for it to fully finish
+  while (activeQueuePromise) {
+    const loopToWait = activeQueuePromise;
+    await debugLog(`[LRC] ensureQueueRunning: Waiting for previous loop to finish before starting runId ${runId}...`);
     try {
-      await activeQueuePromise;
+      await loopToWait;
     } catch (_) {}
+
+    // Guard against potential stale reference
+    if (activeQueuePromise === loopToWait) {
+      activeQueuePromise = null;
+      activeRunId = null;
+    }
   }
 
-  // Re-verify storage state: must still be RUNNING and match runId
+  // 2. Re-read storage
   const state = await getJobState();
-  if (state.runId !== runId || state.status !== 'RUNNING') {
-    await debugLog(`[LRC] State changed while awaiting old loop exit (status=${state.status}, runId=${state.runId}). Not starting.`);
+
+  // 3. Verify state: must match runId, must be RUNNING, and must have unfinished work
+  if (
+    state.runId !== runId ||
+    state.status !== 'RUNNING' ||
+    !state.queue ||
+    state.currentIndex >= state.queue.length
+  ) {
+    await debugLog(`[LRC] ensureQueueRunning: State changed or no remaining work (status=${state.status}, runId=${state.runId}). Not starting.`);
     return;
   }
 
-  activeRunId = runId;
-  activeQueuePromise = runQueueLoop(runId).finally(() => {
-    activeQueuePromise = null;
-    activeRunId = null;
+  // 4. Double check if another processor started meanwhile (e.g. rapid double resume)
+  if (activeQueuePromise && activeRunId === runId) {
+    await debugLog(`[LRC] ensureQueueRunning: Processor already running for runId ${runId}.`);
+    return activeQueuePromise;
+  }
+
+  // 5. Start exactly one new queue processor with local promise token
+  let thisLoopPromise = null;
+  thisLoopPromise = runQueueLoop(runId).finally(() => {
+    // Only clear if this exact processor is still authoritative
+    if (activeQueuePromise === thisLoopPromise) {
+      activeQueuePromise = null;
+      activeRunId = null;
+    }
   });
 
+  activeQueuePromise = thisLoopPromise;
+  activeRunId = runId;
+
+  await debugLog(`[LRC] ensureQueueRunning: Started fresh queue loop for runId ${runId}.`);
   return activeQueuePromise;
 }
 
@@ -684,7 +723,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
 
         sendResponse({ success: true, state });
-        startQueueProcessing(runId);
+        ensureQueueRunning(runId);
         return;
       }
 
@@ -709,7 +748,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           });
 
           sendResponse({ success: true, state });
-          startQueueProcessing(resumeRunId);
+          ensureQueueRunning(resumeRunId);
           return;
         }
 
