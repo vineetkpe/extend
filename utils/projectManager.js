@@ -1,11 +1,18 @@
 /**
  * projectManager.js
- * Local client/project management system for SERPTrack.
- * Handles projects, keyword queues, weekly snapshots, and import/export.
- * All data remains 100% local in chrome.storage.local.
+ * Session Project Management System for SERPTrack.
+ * 
+ * Strict Privacy-First Architecture:
+ * - Projects, keywords, and queues reside strictly in chrome.storage.session.
+ * - Client SEO data disappears automatically when the browser session ends.
+ * - Automatic persistent snapshot history is removed.
+ * - Export generates a local JSON file on the user's computer.
+ * - Import parses JSON with prototype-pollution guards and strict schema/URL validation.
  */
 
-import { STORAGE_KEYS } from './storage.js';
+import { STORAGE_KEYS, getSessionStorage } from './storage.js';
+import { isValidUrlOrDomain } from './parser.js';
+import { validateCoordinates } from './locationValidator.js';
 
 const DEFAULT_PROJECT_ID = 'default_project';
 
@@ -25,57 +32,103 @@ const DEFAULT_PROJECT = {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   },
-  keywords: [],
-  snapshots: []
+  keywords: []
 };
 
 /**
- * Retrieves all projects from local storage. Initializes default project if empty.
+ * Checks recursively for prototype pollution keys in parsed JSON.
+ * @param {*} val
+ * @returns {boolean} true if forbidden keys exist
+ */
+export function hasPrototypePollutionKeys(val) {
+  if (!val || typeof val !== 'object') return false;
+  const proto = Object.getPrototypeOf(val);
+  if (proto !== Object.prototype && proto !== Array.prototype && proto !== null) {
+    return true;
+  }
+  for (const key of Object.getOwnPropertyNames(val)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      return true;
+    }
+    if (typeof val[key] === 'object' && val[key] !== null) {
+      if (hasPrototypePollutionKeys(val[key])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Validates a target URL against dangerous protocol schemes.
+ * Only http: and https: protocols are permitted.
+ * @param {string} urlStr 
+ * @returns {boolean}
+ */
+export function isSafeTargetUrl(urlStr) {
+  if (!urlStr || typeof urlStr !== 'string') return false;
+  const trimmed = urlStr.trim();
+  if (/^(javascript|data|file|chrome|chrome-extension|about|blob|vbscript):/i.test(trimmed)) {
+    return false;
+  }
+  return isValidUrlOrDomain(trimmed);
+}
+
+/**
+ * Retrieves all projects from session storage. Initializes default session project if empty.
  * @returns {Promise<Object<string, object>>}
  */
 export async function getProjects() {
   try {
-    const data = await chrome.storage.local.get(STORAGE_KEYS.PROJECTS);
-    let projects = data[STORAGE_KEYS.PROJECTS];
-    if (!projects || Object.keys(projects).length === 0) {
+    const store = getSessionStorage();
+    if (!store) return { [DEFAULT_PROJECT_ID]: { ...DEFAULT_PROJECT } };
+
+    const data = await store.get(STORAGE_KEYS.PROJECTS);
+    let projects = data ? data[STORAGE_KEYS.PROJECTS] : null;
+
+    if (!projects || typeof projects !== 'object' || Object.keys(projects).length === 0) {
       projects = { [DEFAULT_PROJECT_ID]: { ...DEFAULT_PROJECT } };
-      await chrome.storage.local.set({ [STORAGE_KEYS.PROJECTS]: projects });
+      await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
     }
-    // Ensure all projects have id and convenience properties
+
+    // Ensure all projects have consistent properties
     Object.keys(projects).forEach(pId => {
       if (projects[pId] && projects[pId].config) {
         projects[pId].id = pId;
         projects[pId].projectId = pId;
       }
     });
+
     return projects;
   } catch (err) {
-    console.error('[Projects] Error reading projects:', err);
+    console.error('[Projects] Error reading session projects:', err);
     return { [DEFAULT_PROJECT_ID]: { ...DEFAULT_PROJECT } };
   }
 }
 
 /**
- * Retrieves the currently active project ID.
+ * Retrieves the currently active project ID from session storage.
  * @returns {Promise<string>}
  */
 export async function getActiveProjectId() {
   try {
-    const data = await chrome.storage.local.get(STORAGE_KEYS.ACTIVE_PROJECT_ID);
-    return data[STORAGE_KEYS.ACTIVE_PROJECT_ID] || DEFAULT_PROJECT_ID;
+    const store = getSessionStorage();
+    if (!store) return DEFAULT_PROJECT_ID;
+    const data = await store.get(STORAGE_KEYS.ACTIVE_PROJECT_ID);
+    return (data && data[STORAGE_KEYS.ACTIVE_PROJECT_ID]) || DEFAULT_PROJECT_ID;
   } catch (err) {
     return DEFAULT_PROJECT_ID;
   }
 }
 
 /**
- * Sets the active project ID.
+ * Sets the active project ID in session storage.
  * @param {string} projectId 
  * @returns {Promise<void>}
  */
 export async function setActiveProjectId(projectId) {
   try {
-    await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVE_PROJECT_ID]: projectId });
+    const store = getSessionStorage();
+    if (!store) return;
+    await store.set({ [STORAGE_KEYS.ACTIVE_PROJECT_ID]: projectId });
   } catch (err) {
     console.error('[Projects] Error saving active project ID:', err);
   }
@@ -84,7 +137,7 @@ export async function setActiveProjectId(projectId) {
 export const setActiveProject = setActiveProjectId;
 
 /**
- * Retrieves the active project object.
+ * Retrieves the active project object from session storage.
  * @returns {Promise<object>}
  */
 export async function getActiveProject() {
@@ -94,10 +147,23 @@ export async function getActiveProject() {
     activeId = Object.keys(projects)[0] || DEFAULT_PROJECT_ID;
     await setActiveProjectId(activeId);
   }
-  const proj = projects[activeId];
+  const proj = projects[activeId] || DEFAULT_PROJECT;
+  const cfg = proj.config || proj;
+
   return {
     ...proj,
     id: activeId,
+    projectId: activeId,
+    projectName: cfg.projectName || 'Default Client',
+    domain: cfg.domain || '',
+    googleDomain: cfg.googleDomain || 'google.com',
+    useLocation: Boolean(cfg.useLocation),
+    locationName: cfg.locationName || '',
+    latitude: cfg.latitude || '',
+    longitude: cfg.longitude || '',
+    accuracy: cfg.accuracy !== undefined ? cfg.accuracy : 20,
+    defaultDelaySeconds: cfg.defaultDelaySeconds || 8,
+    defaultMaxDepth: cfg.defaultMaxDepth || 50,
     project: proj,
     activeProjectId: activeId,
     projects
@@ -105,24 +171,26 @@ export async function getActiveProject() {
 }
 
 /**
- * Creates a new project and sets it active.
+ * Creates a new project in session storage and sets it active.
+ * Reliably stores all location parameters.
  * @param {object} projectData
  * @returns {Promise<object>} created project
  */
 export async function createProject(projectData) {
+  const store = getSessionStorage();
   const projects = await getProjects();
   const projectId = 'proj_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
 
   const cfg = {
     projectId,
-    projectName: (projectData.projectName || 'New Project').trim(),
-    domain: (projectData.domain || '').trim(),
+    projectName: String(projectData.projectName || 'New Project').trim(),
+    domain: String(projectData.domain || '').trim(),
     googleDomain: projectData.googleDomain || 'google.com',
     useLocation: Boolean(projectData.useLocation),
-    latitude: projectData.latitude !== undefined ? String(projectData.latitude) : '',
-    longitude: projectData.longitude !== undefined ? String(projectData.longitude) : '',
+    locationName: String(projectData.locationName || '').trim(),
+    latitude: projectData.latitude !== undefined && projectData.latitude !== null ? String(projectData.latitude).trim() : '',
+    longitude: projectData.longitude !== undefined && projectData.longitude !== null ? String(projectData.longitude).trim() : '',
     accuracy: Number(projectData.accuracy) || 20,
-    locationName: (projectData.locationName || '').trim(),
     defaultDelaySeconds: Math.max(5, Number(projectData.defaultDelaySeconds) || 8),
     defaultMaxDepth: Number(projectData.defaultMaxDepth) || 50,
     createdAt: new Date().toISOString(),
@@ -136,28 +204,29 @@ export async function createProject(projectData) {
     domain: cfg.domain,
     googleDomain: cfg.googleDomain,
     useLocation: cfg.useLocation,
+    locationName: cfg.locationName,
     latitude: cfg.latitude,
     longitude: cfg.longitude,
     accuracy: cfg.accuracy,
-    locationName: cfg.locationName,
     defaultDelaySeconds: cfg.defaultDelaySeconds,
     defaultMaxDepth: cfg.defaultMaxDepth,
     config: cfg,
-    keywords: projectData.keywords || [],
-    snapshots: []
+    keywords: Array.isArray(projectData.keywords) ? projectData.keywords : []
   };
 
   projects[projectId] = newProject;
-  await chrome.storage.local.set({
-    [STORAGE_KEYS.PROJECTS]: projects,
-    [STORAGE_KEYS.ACTIVE_PROJECT_ID]: projectId
-  });
+  if (store) {
+    await store.set({
+      [STORAGE_KEYS.PROJECTS]: projects,
+      [STORAGE_KEYS.ACTIVE_PROJECT_ID]: projectId
+    });
+  }
 
   return newProject;
 }
 
 /**
- * Retrieves a single project by ID.
+ * Retrieves a single project by ID from session storage.
  * @param {string} projectId 
  * @returns {Promise<object|null>}
  */
@@ -165,48 +234,58 @@ export async function getProjectById(projectId) {
   const projects = await getProjects();
   const proj = projects[projectId];
   if (!proj) return null;
+  const cfg = proj.config || proj;
+
   return {
     ...proj,
     id: projectId,
     projectId,
-    projectName: proj.config?.projectName || proj.projectName || '',
-    domain: proj.config?.domain || proj.domain || '',
-    useLocation: proj.config?.useLocation !== undefined ? proj.config.useLocation : Boolean(proj.useLocation),
-    latitude: proj.config?.latitude !== undefined ? proj.config.latitude : (proj.latitude || ''),
-    longitude: proj.config?.longitude !== undefined ? proj.config.longitude : (proj.longitude || ''),
-    accuracy: proj.config?.accuracy || proj.accuracy || 20,
-    locationName: proj.config?.locationName || proj.locationName || '',
-    defaultDelaySeconds: proj.config?.defaultDelaySeconds || proj.defaultDelaySeconds || 8,
-    defaultMaxDepth: proj.config?.defaultMaxDepth || proj.defaultMaxDepth || 50
+    projectName: cfg.projectName || '',
+    domain: cfg.domain || '',
+    googleDomain: cfg.googleDomain || 'google.com',
+    useLocation: cfg.useLocation !== undefined ? Boolean(cfg.useLocation) : false,
+    locationName: cfg.locationName || '',
+    latitude: cfg.latitude || '',
+    longitude: cfg.longitude || '',
+    accuracy: cfg.accuracy !== undefined ? cfg.accuracy : 20,
+    defaultDelaySeconds: cfg.defaultDelaySeconds || 8,
+    defaultMaxDepth: cfg.defaultMaxDepth || 50,
+    config: cfg
   };
 }
 
 /**
- * Saves a full project object (config, keywords, snapshots).
+ * Saves or updates a project in session storage.
+ * Reliably stores per-project location fields.
  * @param {object} project 
  * @returns {Promise<void>}
  */
 export async function saveProject(project) {
   const pId = project.id || project.projectId || project.config?.projectId;
   if (!pId) return;
+  const store = getSessionStorage();
   const projects = await getProjects();
-  const existing = projects[pId] || { config: {}, keywords: [], snapshots: [] };
+  const existing = projects[pId] || { config: {}, keywords: [] };
+
+  const existingCfg = existing.config || {};
+  const incomingCfg = project.config || {};
+
   const updatedConfig = {
-    ...existing.config,
-    ...(project.config || {}),
+    ...existingCfg,
+    ...incomingCfg,
     projectId: pId,
+    projectName: project.projectName !== undefined ? project.projectName : (incomingCfg.projectName !== undefined ? incomingCfg.projectName : existingCfg.projectName || ''),
+    domain: project.domain !== undefined ? project.domain : (incomingCfg.domain !== undefined ? incomingCfg.domain : existingCfg.domain || ''),
+    googleDomain: project.googleDomain || incomingCfg.googleDomain || existingCfg.googleDomain || 'google.com',
+    useLocation: project.useLocation !== undefined ? Boolean(project.useLocation) : (incomingCfg.useLocation !== undefined ? Boolean(incomingCfg.useLocation) : Boolean(existingCfg.useLocation)),
+    locationName: project.locationName !== undefined ? project.locationName : (incomingCfg.locationName !== undefined ? incomingCfg.locationName : existingCfg.locationName || ''),
+    latitude: project.latitude !== undefined ? String(project.latitude).trim() : (incomingCfg.latitude !== undefined ? String(incomingCfg.latitude).trim() : (existingCfg.latitude || '')),
+    longitude: project.longitude !== undefined ? String(project.longitude).trim() : (incomingCfg.longitude !== undefined ? String(incomingCfg.longitude).trim() : (existingCfg.longitude || '')),
+    accuracy: project.accuracy !== undefined ? Number(project.accuracy) : (incomingCfg.accuracy !== undefined ? Number(incomingCfg.accuracy) : (existingCfg.accuracy || 20)),
+    defaultDelaySeconds: project.defaultDelaySeconds || incomingCfg.defaultDelaySeconds || existingCfg.defaultDelaySeconds || 8,
+    defaultMaxDepth: project.defaultMaxDepth || incomingCfg.defaultMaxDepth || existingCfg.defaultMaxDepth || 50,
     updatedAt: new Date().toISOString()
   };
-  if (project.projectName !== undefined) updatedConfig.projectName = project.projectName;
-  if (project.domain !== undefined) updatedConfig.domain = project.domain;
-  if (project.googleDomain !== undefined) updatedConfig.googleDomain = project.googleDomain;
-  if (project.useLocation !== undefined) updatedConfig.useLocation = project.useLocation;
-  if (project.latitude !== undefined) updatedConfig.latitude = project.latitude;
-  if (project.longitude !== undefined) updatedConfig.longitude = project.longitude;
-  if (project.accuracy !== undefined) updatedConfig.accuracy = project.accuracy;
-  if (project.locationName !== undefined) updatedConfig.locationName = project.locationName;
-  if (project.defaultDelaySeconds !== undefined) updatedConfig.defaultDelaySeconds = project.defaultDelaySeconds;
-  if (project.defaultMaxDepth !== undefined) updatedConfig.defaultMaxDepth = project.defaultMaxDepth;
 
   projects[pId] = {
     ...existing,
@@ -217,48 +296,66 @@ export async function saveProject(project) {
     domain: updatedConfig.domain,
     googleDomain: updatedConfig.googleDomain,
     useLocation: updatedConfig.useLocation,
+    locationName: updatedConfig.locationName,
     latitude: updatedConfig.latitude,
     longitude: updatedConfig.longitude,
     accuracy: updatedConfig.accuracy,
-    locationName: updatedConfig.locationName,
     defaultDelaySeconds: updatedConfig.defaultDelaySeconds,
     defaultMaxDepth: updatedConfig.defaultMaxDepth,
     config: updatedConfig,
-    keywords: project.keywords !== undefined ? project.keywords : existing.keywords,
-    snapshots: project.snapshots !== undefined ? project.snapshots : existing.snapshots
+    keywords: project.keywords !== undefined ? project.keywords : (existing.keywords || [])
   };
 
-  await chrome.storage.local.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  if (store) {
+    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  }
 }
 
 /**
- * Updates an existing project's configuration.
+ * Updates an existing project's configuration in session storage.
  * @param {string} projectId 
  * @param {object} configUpdates 
  * @returns {Promise<object>} updated project
  */
 export async function updateProject(projectId, configUpdates) {
+  const store = getSessionStorage();
   const projects = await getProjects();
   if (!projects[projectId]) {
     throw new Error(`Project ${projectId} not found.`);
   }
 
-  projects[projectId].config = {
-    ...projects[projectId].config,
+  const existingConfig = projects[projectId].config || {};
+  const mergedConfig = {
+    ...existingConfig,
     ...configUpdates,
     updatedAt: new Date().toISOString()
   };
 
-  await chrome.storage.local.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  projects[projectId].config = mergedConfig;
+  projects[projectId].projectName = mergedConfig.projectName;
+  projects[projectId].domain = mergedConfig.domain;
+  projects[projectId].googleDomain = mergedConfig.googleDomain;
+  projects[projectId].useLocation = Boolean(mergedConfig.useLocation);
+  projects[projectId].locationName = mergedConfig.locationName || '';
+  projects[projectId].latitude = mergedConfig.latitude || '';
+  projects[projectId].longitude = mergedConfig.longitude || '';
+  projects[projectId].accuracy = mergedConfig.accuracy !== undefined ? mergedConfig.accuracy : 20;
+  projects[projectId].defaultDelaySeconds = mergedConfig.defaultDelaySeconds;
+  projects[projectId].defaultMaxDepth = mergedConfig.defaultMaxDepth;
+
+  if (store) {
+    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  }
   return projects[projectId];
 }
 
 /**
- * Deletes a project. Fails if only 1 project remains.
+ * Deletes a project from session storage. Fails if only 1 project remains.
  * @param {string} projectId 
  * @returns {Promise<{ success: boolean, newActiveId?: string }>}
  */
 export async function deleteProject(projectId) {
+  const store = getSessionStorage();
   const projects = await getProjects();
   const keys = Object.keys(projects);
   if (keys.length <= 1) {
@@ -272,7 +369,9 @@ export async function deleteProject(projectId) {
     await setActiveProjectId(activeId);
   }
 
-  await chrome.storage.local.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  if (store) {
+    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  }
   return { success: true, newActiveId: activeId };
 }
 
@@ -287,86 +386,27 @@ export async function getProjectKeywords(projectId) {
 }
 
 /**
- * Saves or replaces keyword rows for a project.
+ * Saves or replaces keyword rows for a project in session storage.
  * @param {string} projectId 
  * @param {Array<object>} keywordRows 
  * @returns {Promise<void>}
  */
 export async function saveProjectKeywords(projectId, keywordRows) {
+  const store = getSessionStorage();
   const projects = await getProjects();
   if (!projects[projectId]) return;
 
   projects[projectId].keywords = keywordRows || [];
-  projects[projectId].config.updatedAt = new Date().toISOString();
+  if (projects[projectId].config) {
+    projects[projectId].config.updatedAt = new Date().toISOString();
+  }
 
-  await chrome.storage.local.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  if (store) {
+    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  }
 }
 
 export const setProjectKeywords = saveProjectKeywords;
-
-/**
- * Retrieves snapshot history for a project.
- * @param {string} projectId 
- * @returns {Promise<Array<object>>}
- */
-export async function getProjectSnapshots(projectId) {
-  const project = await getProjectById(projectId);
-  return project ? (project.snapshots || []) : [];
-}
-
-/**
- * Adds a weekly snapshot to a project, capping at 12 snapshots.
- * Automatically generates a summary if raw results are passed.
- * @param {string} projectId 
- * @param {object|Array} snapshotOrResults 
- * @returns {Promise<void>}
- */
-export async function addProjectSnapshot(projectId, snapshotOrResults) {
-  const projects = await getProjects();
-  if (!projects[projectId]) return;
-
-  let summary = {};
-  let results = [];
-
-  if (Array.isArray(snapshotOrResults)) {
-    results = snapshotOrResults;
-    let found = 0;
-    let notFound = 0;
-    let errors = 0;
-    results.forEach(r => {
-      if (r) {
-        if (r.status === 'ERROR' || r.matchStatus === 'ERROR') {
-          errors++;
-        } else if (typeof r.currentPosition === 'number') {
-          found++;
-        } else {
-          notFound++;
-        }
-      }
-    });
-    summary = { total: results.length, found, notFound, errors };
-  } else if (snapshotOrResults && typeof snapshotOrResults === 'object') {
-    summary = snapshotOrResults.summary || {};
-    results = snapshotOrResults.results || [];
-  }
-
-  const currentSnapshots = projects[projectId].snapshots || [];
-  const updatedSnapshots = [
-    {
-      snapshotId: 'snap_' + Date.now(),
-      projectId,
-      checkedAt: new Date().toISOString(),
-      summary,
-      results
-    },
-    ...currentSnapshots
-  ].slice(0, 12); // Keep maximum 12 local snapshots
-
-  projects[projectId].snapshots = updatedSnapshots;
-  projects[projectId].config.updatedAt = new Date().toISOString();
-
-  await chrome.storage.local.set({ [STORAGE_KEYS.PROJECTS]: projects });
-}
 
 /**
  * Promotes current ranking results to previous positions for the next check.
@@ -375,6 +415,7 @@ export async function addProjectSnapshot(projectId, snapshotOrResults) {
  * @returns {Promise<Array<object>>} updated keywords
  */
 export async function promoteCurrentToPrevious(projectId, currentResults = []) {
+  const store = getSessionStorage();
   const projects = await getProjects();
   if (!projects[projectId]) return [];
 
@@ -401,14 +442,27 @@ export async function promoteCurrentToPrevious(projectId, currentResults = []) {
   });
 
   projects[projectId].keywords = updatedKeywords;
-  projects[projectId].config.updatedAt = new Date().toISOString();
+  if (projects[projectId].config) {
+    projects[projectId].config.updatedAt = new Date().toISOString();
+  }
 
-  await chrome.storage.local.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  if (store) {
+    await store.set({ [STORAGE_KEYS.PROJECTS]: projects });
+  }
   return updatedKeywords;
 }
 
 /**
- * Exports a project configuration, keywords, and snapshots as clean, portable JSON.
+ * Deprecated: Automatic snapshot persistence removed in privacy-first architecture.
+ * Ranking data is not retained across sessions; users can export CSV/JSON locally.
+ */
+export async function addProjectSnapshot() {
+  // No-op: automatic snapshot persistence removed for privacy architecture
+}
+
+/**
+ * Exports project configuration and keywords as clean, portable JSON.
+ * User downloads file locally; no data transmitted anywhere.
  * @param {string} projectId 
  * @returns {Promise<string>} JSON string
  */
@@ -417,39 +471,40 @@ export async function exportProjectJson(projectId) {
   const proj = projects[projectId];
   if (!proj) throw new Error('Project not found.');
 
+  const cfg = proj.config || proj;
+
   const exportObj = {
-    schemaVersion: '1.0',
+    schemaVersion: '2.0',
     exportType: 'SERPTRACK_PROJECT',
     exportedAt: new Date().toISOString(),
     project: {
-      projectName: proj.config.projectName,
-      domain: proj.config.domain,
-      googleDomain: proj.config.googleDomain,
-      useLocation: proj.config.useLocation,
-      latitude: proj.config.latitude,
-      longitude: proj.config.longitude,
-      accuracy: proj.config.accuracy,
-      locationName: proj.config.locationName,
-      defaultDelaySeconds: proj.config.defaultDelaySeconds,
-      defaultMaxDepth: proj.config.defaultMaxDepth,
+      projectName: cfg.projectName || '',
+      domain: cfg.domain || '',
+      googleDomain: cfg.googleDomain || 'google.com',
+      useLocation: Boolean(cfg.useLocation),
+      locationName: cfg.locationName || '',
+      latitude: cfg.latitude || '',
+      longitude: cfg.longitude || '',
+      accuracy: cfg.accuracy !== undefined ? cfg.accuracy : 20,
+      defaultDelaySeconds: cfg.defaultDelaySeconds || 8,
+      defaultMaxDepth: cfg.defaultMaxDepth || 50,
       config: {
-        projectName: proj.config.projectName,
-        domain: proj.config.domain,
-        googleDomain: proj.config.googleDomain,
-        useLocation: proj.config.useLocation,
-        latitude: proj.config.latitude,
-        longitude: proj.config.longitude,
-        accuracy: proj.config.accuracy,
-        locationName: proj.config.locationName,
-        defaultDelaySeconds: proj.config.defaultDelaySeconds,
-        defaultMaxDepth: proj.config.defaultMaxDepth
+        projectName: cfg.projectName || '',
+        domain: cfg.domain || '',
+        googleDomain: cfg.googleDomain || 'google.com',
+        useLocation: Boolean(cfg.useLocation),
+        locationName: cfg.locationName || '',
+        latitude: cfg.latitude || '',
+        longitude: cfg.longitude || '',
+        accuracy: cfg.accuracy !== undefined ? cfg.accuracy : 20,
+        defaultDelaySeconds: cfg.defaultDelaySeconds || 8,
+        defaultMaxDepth: cfg.defaultMaxDepth || 50
       },
       keywords: (proj.keywords || []).map(k => ({
-        keyword: k.keyword,
-        targetUrl: k.targetUrl,
-        previousPosition: k.previousPosition
-      })),
-      snapshots: proj.snapshots || []
+        keyword: String(k.keyword || '').trim(),
+        targetUrl: String(k.targetUrl || '').trim(),
+        previousPosition: k.previousPosition !== undefined ? k.previousPosition : null
+      }))
     }
   };
 
@@ -457,12 +512,24 @@ export async function exportProjectJson(projectId) {
 }
 
 /**
- * Imports a project from JSON string with validation and sanitization.
+ * Imports a project from JSON string with strict validation and sanitization.
+ * Enforces prototype-pollution safety and URL scheme restrictions.
+ * Saved only into session storage.
+ * 
  * @param {string} jsonString 
  * @param {string} [customName]
  * @returns {Promise<object>} imported project
  */
 export async function importProjectJson(jsonString, customName = '') {
+  if (typeof jsonString !== 'string' || !jsonString.trim()) {
+    throw new Error('Project JSON string is empty.');
+  }
+
+  // Pre-parse Prototype Pollution Protection
+  if (/"(?:__proto__|constructor|prototype)"\s*:/i.test(jsonString)) {
+    throw new Error('Security Error: Invalid object keys detected in JSON import.');
+  }
+
   let parsed;
   try {
     parsed = JSON.parse(jsonString);
@@ -470,43 +537,84 @@ export async function importProjectJson(jsonString, customName = '') {
     throw new Error('Invalid JSON format.');
   }
 
-  if (!parsed || !parsed.project || !parsed.project.config) {
+  // Prototype Pollution Protection
+  if (hasPrototypePollutionKeys(parsed)) {
+    throw new Error('Security Error: Invalid object keys detected in JSON import.');
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
     throw new Error('Invalid project file structure.');
   }
 
-  const pCfg = parsed.project.config;
-  const pKeywords = Array.isArray(parsed.project.keywords) ? parsed.project.keywords : [];
-  const pSnapshots = Array.isArray(parsed.project.snapshots) ? parsed.project.snapshots : [];
+  const projObj = parsed.project || parsed;
+  const pCfg = projObj.config || projObj;
 
-  const sanitizedKeywords = pKeywords.map((k, idx) => ({
-    keywordId: 'kw_' + idx + '_' + Date.now(),
-    keyword: String(k.keyword || '').trim(),
-    targetUrl: String(k.targetUrl || '').trim(),
-    previousPosition: k.previousPosition !== undefined ? k.previousPosition : null,
-    lastCurrentPosition: null,
-    lastCheckedAt: null
-  })).filter(k => k.keyword && k.targetUrl);
+  if (!pCfg || typeof pCfg !== 'object') {
+    throw new Error('Invalid project configuration in import file.');
+  }
+
+  const rawKeywords = Array.isArray(projObj.keywords) ? projObj.keywords : [];
+
+  // Strictly sanitize keywords and enforce safe URLs (reject javascript:, data:, etc.)
+  const sanitizedKeywords = [];
+  for (let idx = 0; idx < rawKeywords.length; idx++) {
+    const k = rawKeywords[idx];
+    if (!k || typeof k !== 'object') continue;
+
+    const kw = String(k.keyword || '').trim();
+    const targetUrl = String(k.targetUrl || '').trim();
+
+    if (!kw || !targetUrl) continue;
+
+    // Strict URL validation
+    if (!isSafeTargetUrl(targetUrl)) {
+      continue; // Skip dangerous or invalid URLs
+    }
+
+    let prevPos = null;
+    if (k.previousPosition !== undefined && k.previousPosition !== null && k.previousPosition !== '—' && k.previousPosition !== '-') {
+      const num = Number(k.previousPosition);
+      if (!isNaN(num) && num > 0) prevPos = num;
+    }
+
+    sanitizedKeywords.push({
+      id: `kw_${idx}_${Date.now()}`,
+      keyword: kw,
+      targetUrl: targetUrl,
+      previousPosition: prevPos,
+      lastCurrentPosition: null,
+      lastCheckedAt: null
+    });
+  }
+
+  // Location validation if useLocation is true
+  const useLocation = Boolean(pCfg.useLocation);
+  let lat = pCfg.latitude !== undefined ? String(pCfg.latitude).trim() : '';
+  let lon = pCfg.longitude !== undefined ? String(pCfg.longitude).trim() : '';
+  let acc = Number(pCfg.accuracy) || 20;
+
+  if (useLocation && (lat || lon)) {
+    const val = validateCoordinates(lat, lon, acc);
+    if (val.valid) {
+      lat = String(val.latitude);
+      lon = String(val.longitude);
+      acc = val.accuracy;
+    }
+  }
 
   const importedProject = await createProject({
     projectName: customName ? customName.trim() : ((pCfg.projectName || 'Imported Project') + ' (Imported)'),
-    domain: pCfg.domain || '',
+    domain: String(pCfg.domain || '').trim(),
     googleDomain: pCfg.googleDomain || 'google.com',
-    useLocation: Boolean(pCfg.useLocation),
-    latitude: pCfg.latitude || '',
-    longitude: pCfg.longitude || '',
-    accuracy: Number(pCfg.accuracy) || 20,
-    locationName: pCfg.locationName || '',
+    useLocation: useLocation,
+    locationName: String(pCfg.locationName || '').trim(),
+    latitude: lat,
+    longitude: lon,
+    accuracy: acc,
     defaultDelaySeconds: Math.max(5, Number(pCfg.defaultDelaySeconds) || 8),
     defaultMaxDepth: Number(pCfg.defaultMaxDepth) || 50,
     keywords: sanitizedKeywords
   });
-
-  if (pSnapshots.length > 0) {
-    const projects = await getProjects();
-    projects[importedProject.config.projectId].snapshots = pSnapshots.slice(0, 12);
-    await chrome.storage.local.set({ [STORAGE_KEYS.PROJECTS]: projects });
-    importedProject.snapshots = pSnapshots.slice(0, 12);
-  }
 
   return importedProject;
 }

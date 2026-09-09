@@ -21,9 +21,10 @@ import {
   getJobState,
   saveJobState,
   resetJobState,
+  clearSessionData,
   LOCATION_STATES
 } from './utils/storage.js';
-import { addProjectSnapshot } from './utils/projectManager.js';
+import { getProjects } from './utils/projectManager.js';
 
 // Queue loop lifecycle management
 let activeQueuePromise = null;
@@ -536,9 +537,25 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
       seenUrls: Array.from(seenNormalizedUrls)
     });
 
+    // FAIL-CLOSED GUARD: If location simulation is enabled, verify CDP override is still attached & active
+    if (settings && settings.useLocation) {
+      if (!activeDebuggerTabId || activeDebuggerTabId !== tabId || !activeAppliedLocation) {
+        await debugLog('[LRC FAIL-CLOSED] Debugger detached or location override lost before navigation.');
+        return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
+      }
+    }
+
     try {
       // 3. Navigate tab
       await navigateAndWaitForTab(tabId, searchUrl, 20000);
+
+      // Verify override immediately after navigation
+      if (settings && settings.useLocation) {
+        if (!activeDebuggerTabId || activeDebuggerTabId !== tabId || !activeAppliedLocation) {
+          await debugLog('[LRC FAIL-CLOSED] Location override lost during/after navigation.');
+          return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
+        }
+      }
 
       // Brief dynamic render wait (interruptible)
       const renderWait = await waitForDelay(runId, 1200);
@@ -646,6 +663,12 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
         consecutiveEmptyPages++;
       }
     } catch (err) {
+      if (settings && settings.useLocation) {
+        if (!activeDebuggerTabId || activeDebuggerTabId !== tabId || !activeAppliedLocation) {
+          await debugLog('[LRC FAIL-CLOSED] Error occurred while location override was lost.');
+          return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
+        }
+      }
       const errReason = await getInterruptionReason(runId);
       if (errReason) {
         return { resultItem: null, interrupted: true, reason: errReason };
@@ -753,15 +776,6 @@ async function runQueueLoop(runId) {
         checkedDepth: 0,
         seenUrls: []
       });
-      const activeProjId = state.projectId || (await getSettings()).activeProjectId;
-      if (activeProjId && state.results && state.results.length > 0) {
-        try {
-          await addProjectSnapshot(activeProjId, state.results);
-          await debugLog(`[LRC] Auto-saved weekly snapshot for project ${activeProjId}`);
-        } catch (snapErr) {
-          console.error('[LRC] Failed to auto-save project snapshot:', snapErr);
-        }
-      }
       broadcastMessage({ action: 'PROGRESS_UPDATE', state: await getJobState() });
       await debugLog('[LRC] All keywords completed.');
       break;
@@ -790,7 +804,7 @@ async function runQueueLoop(runId) {
     if (settings && settings.useLocation) {
       const locResult = await ensureLocationApplied(tab.id, runId, settings);
       if (!locResult.success) {
-        const errorMsg = 'Location override failed. Rank checking has been stopped to prevent inaccurate local results.';
+        const errorMsg = 'Location override was lost. Rank checking stopped to prevent inaccurate results.';
         await debugLog(`[LRC FAIL-CLOSED] ${errorMsg} Error: ${locResult.error}`);
         await saveJobState({
           status: 'BLOCKED',
@@ -852,6 +866,32 @@ async function runQueueLoop(runId) {
         break;
       }
 
+      if (reason === 'LOCATION_LOST') {
+        const errorMsg = 'Location override was lost. Rank checking stopped to prevent inaccurate results.';
+        await debugLog(`[LRC FAIL-CLOSED] ${errorMsg}`);
+        const checkState = await getJobState();
+        if (checkState.runId === runId && checkState.status !== 'STOPPED') {
+          await saveJobState({
+            status: 'BLOCKED',
+            errorMessage: errorMsg,
+            currentKeyword: null,
+            currentSerpOffset: 0,
+            checkedDepth: 0,
+            seenUrls: []
+          });
+          broadcastMessage({
+            action: 'JOB_BLOCKED',
+            message: errorMsg
+          });
+          broadcastMessage({
+            action: 'LOCATION_STATUS_UPDATE',
+            status: LOCATION_STATES.FAILED,
+            error: errorMsg
+          });
+        }
+        break;
+      }
+
       if (reason === 'BLOCKED') {
         // BUG 2 FIX: Verify state priority before writing BLOCKED (STOPPED & PAUSED have higher priority)
         const checkState = await getJobState();
@@ -899,7 +939,8 @@ async function runQueueLoop(runId) {
     const itemOriginalIndex = (item.originalIndex !== undefined) ? item.originalIndex : index;
     const finalResultItem = {
       ...resultItem,
-      originalIndex: itemOriginalIndex
+      originalIndex: itemOriginalIndex,
+      projectId: latestState.projectId || state.projectId || null
     };
 
     while (updatedResults.length <= itemOriginalIndex) {
@@ -929,18 +970,6 @@ async function runQueueLoop(runId) {
       checkedDepth: 0,
       seenUrls: []
     });
-
-    if (isComplete && !wasPaused) {
-      const activeProjId = latestState.projectId || (await getSettings()).activeProjectId;
-      if (activeProjId) {
-        try {
-          await addProjectSnapshot(activeProjId, updatedResults);
-          await debugLog(`[LRC] Auto-saved weekly snapshot for project ${activeProjId}`);
-        } catch (snapErr) {
-          console.error('[LRC] Failed to auto-save project snapshot:', snapErr);
-        }
-      }
-    }
 
     broadcastMessage({
       action: 'PROGRESS_UPDATE',
@@ -1056,6 +1085,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
             return;
           }
+
+          // Bug 1 Fix: Compare project coordinates with currently applied coordinates and reapply if different
+          if (
+            !activeAppliedLocation ||
+            activeAppliedLocation.latitude !== locVal.latitude ||
+            activeAppliedLocation.longitude !== locVal.longitude
+          ) {
+            await debugLog(`[LRC Location] Location coordinates changed or not applied. Reapplying before start.`);
+            activeAppliedLocation = null;
+          }
         }
 
         const runId = generateRunId();
@@ -1063,6 +1102,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const prefilledResults = (queue || []).map((item, idx) => ({
           id: item.id || `kw_${idx}`,
           originalIndex: idx,
+          projectId: projectId || null,
           keyword: item.keyword,
           targetUrl: item.targetUrl,
           previousPosition: item.previousPosition ?? null,
@@ -1081,6 +1121,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           runId: runId,
           status: 'RUNNING',
           projectId: projectId || null,
+          activeProjectId: projectId || null,
           queue: (queue || []).map((q, idx) => ({ ...q, originalIndex: idx })),
           currentIndex: 0,
           results: prefilledResults,
@@ -1098,6 +1139,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       if (request.action === 'RETRY_FAILED_JOB') {
         const currentState = await getJobState();
+
+        if (request.projectId && currentState.projectId && request.projectId !== currentState.projectId) {
+          sendResponse({ success: false, message: 'Cannot retry: active results belong to a different project.' });
+          return;
+        }
 
         if (!currentState.results || currentState.results.length === 0) {
           sendResponse({ success: false, message: 'No results to retry.' });
@@ -1196,6 +1242,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         await resetJobState();
         const state = await getJobState();
         sendResponse({ success: true, state });
+        return;
+      }
+
+      if (request.action === 'CLEAR_SESSION_DATA') {
+        activeRunId = null;
+        if (activeDebuggerTabId) {
+          try {
+            await sendDebuggerCommand({ tabId: activeDebuggerTabId }, 'Emulation.clearGeolocationOverride', {});
+            await detachDebugger({ tabId: activeDebuggerTabId });
+          } catch (_) {}
+          activeDebuggerTabId = null;
+          activeAppliedLocation = null;
+        }
+        await clearSessionData();
+        await resetJobState();
+        await getProjects();
+        broadcastMessage({ action: 'SESSION_CLEARED' });
+        broadcastMessage({ action: 'PROGRESS_UPDATE', state: await getJobState() });
+        broadcastMessage({ action: 'LOCATION_STATUS_UPDATE', status: LOCATION_STATES.NOT_CONFIGURED });
+        sendResponse({ success: true, message: 'Session data cleared.' });
         return;
       }
 

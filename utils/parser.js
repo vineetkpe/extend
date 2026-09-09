@@ -13,8 +13,16 @@ export function isValidUrlOrDomain(str) {
   const trimmed = str.trim();
   if (trimmed.length < 3) return false;
 
-  // If starts with http:// or https://, check if URL parser accepts it
-  if (/^https?:\/\//i.test(trimmed)) {
+  // Strict URL security: reject dangerous schemes
+  if (/^(javascript|data|file|chrome|chrome-extension|about|blob|vbscript):/i.test(trimmed)) {
+    return false;
+  }
+
+  // If starts with scheme, only allow http: and https:
+  if (/^[a-zA-Z0-9+.-]+:\/\//.test(trimmed)) {
+    if (!/^https?:\/\//i.test(trimmed)) {
+      return false;
+    }
     try {
       const u = new URL(trimmed);
       return Boolean(u.hostname && u.hostname.includes('.'));

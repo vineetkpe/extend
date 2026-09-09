@@ -56,6 +56,10 @@
           <button id="btn-delete-project" class="btn btn-danger-outline btn-sm" title="Delete current project">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
           </button>
+          <button id="btn-clear-session" class="btn btn-danger-outline btn-sm" title="Stop active jobs, detach debugger, and clear session data">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+            Clear Session Data
+          </button>
         </div>
       </div>
     </header>
@@ -219,7 +223,7 @@
         <div class="tab-nav">
           <button class="tab-btn active" data-tab="tab-results">Live Results Table (<span id="results-count-badge">0</span>)</button>
           <button class="tab-btn" data-tab="tab-keywords">Keyword Queue (20–80 Rows) (<span id="keywords-count-badge">0</span>)</button>
-          <button class="tab-btn" data-tab="tab-snapshots">Weekly Snapshots (<span id="snapshots-count-badge">0</span>)</button>
+          <button class="tab-btn" data-tab="tab-privacy">Privacy & Session</button>
         </div>
 
         <!-- TAB 1: Live Results Table -->
@@ -280,7 +284,7 @@
               <p>Paste lines from Excel/Google Sheets. Format: <code>Keyword [TAB] Target URL [TAB] Previous Position (optional)</code></p>
             </div>
             <div class="helper-actions">
-              <button id="btn-load-sample" class="btn btn-secondary btn-sm">Load 25 Sample Rows</button>
+              <button id="btn-load-sample" class="btn btn-secondary btn-sm">Load 20 Sample Rows</button>
               <button id="btn-save-keywords" class="btn btn-primary btn-sm">Save Keywords to Project</button>
             </div>
           </div>
@@ -293,14 +297,32 @@
           </div>
         </div>
 
-        <!-- TAB 3: Snapshot History -->
-        <div class="tab-pane" id="tab-snapshots">
-          <div class="snapshot-header">
-            <h4>Weekly Snapshot History (Up to 12 Local Snapshots)</h4>
-            <p>Every completed rank check automatically saves a permanent local snapshot for historical reporting.</p>
-          </div>
-          <div class="snapshots-list" id="snapshots-list">
-            <!-- Dynamically populated -->
+        <!-- TAB 3: Privacy & Session Architecture -->
+        <div class="tab-pane" id="tab-privacy">
+          <div class="privacy-content" style="padding: 24px; max-width: 850px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+              <span style="font-size: 24px;">🛡️</span>
+              <h3 style="margin: 0; font-size: 18px; color: #fff;">Strict Privacy-First Architecture</h3>
+            </div>
+            <div class="privacy-notice-box" style="background: rgba(31, 41, 55, 0.7); border: 1px solid #374151; border-radius: 8px; padding: 20px; margin-bottom: 20px; line-height: 1.6;">
+              <p style="margin-top: 0; font-size: 14px; color: #e5e7eb; font-weight: 600;">
+                Your SEO data is processed locally in this browser session.
+              </p>
+              <p style="font-size: 13px; color: #d1d5db;">
+                We do not receive or store your keywords, client domains, rankings, locations, or results.
+                There is NO backend server, NO cloud database, NO analytics, NO telemetry, and NO error-tracking SDK.
+              </p>
+              <p style="font-size: 13px; color: #d1d5db;">
+                Google search queries are sent directly to Google when rank checking runs.
+              </p>
+              <p style="margin-bottom: 0; font-size: 13px; color: #9ca3af;">
+                Session data is cleared when the browser session ends. If you want to keep your project for future sessions, use <strong>Export JSON</strong> to save a file locally on your device.
+              </p>
+            </div>
+            <div style="display: flex; gap: 12px; align-items: center;">
+              <button id="btn-privacy-clear" class="btn btn-danger-outline btn-sm">CLEAR SESSION DATA NOW</button>
+              <span style="font-size: 12px; color: #9ca3af;">Halts active rank checks, resets CDP overrides, and wipes session memory.</span>
+            </div>
           </div>
         </div>
       </section>
@@ -345,6 +367,31 @@
                 <option value="50" selected>Top 50</option>
                 <option value="100">Top 100</option>
               </select>
+            </div>
+          </div>
+          <hr style="border: 0; border-top: 1px solid #374151; margin: 16px 0;">
+          <div class="form-group">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+              <input type="checkbox" id="modal-project-use-location">
+              <span style="font-weight: 600; color: #f3f4f6;">Simulate Client Geolocation (CDP Override)</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label for="modal-project-loc-name">Location City / Label</label>
+            <input type="text" id="modal-project-loc-name" placeholder="e.g. New York, NY or London, UK">
+          </div>
+          <div class="form-row">
+            <div class="form-group col-5">
+              <label for="modal-project-lat">Latitude</label>
+              <input type="text" id="modal-project-lat" placeholder="40.7128">
+            </div>
+            <div class="form-group col-5">
+              <label for="modal-project-lon">Longitude</label>
+              <input type="text" id="modal-project-lon" placeholder="-74.0060">
+            </div>
+            <div class="form-group col-2">
+              <label for="modal-project-acc">Acc (m)</label>
+              <input type="number" id="modal-project-acc" value="20" min="1" max="1000">
             </div>
           </div>
         </div>

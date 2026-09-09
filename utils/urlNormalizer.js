@@ -55,6 +55,26 @@ export function cleanGoogleRedirect(url) {
 }
 
 /**
+ * Strictly validates that a target URL is safe (only http: or https:, no script/data schemes).
+ * @param {string} rawUrl 
+ * @returns {boolean}
+ */
+export function isValidTargetUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  const trimmed = rawUrl.trim();
+  if (/^(javascript|data|file|chrome|chrome-extension|about|blob|vbscript):/i.test(trimmed)) {
+    return false;
+  }
+  try {
+    const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const parsed = new URL(candidate);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.hostname && parsed.hostname.includes('.'));
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * Normalizes a URL for comparison:
  * - Trims whitespace
  * - Decodes percent-encoded characters where safe
@@ -71,8 +91,12 @@ export function cleanGoogleRedirect(url) {
  */
 export function normalizeUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim();
+  if (/^(javascript|data|file|chrome|chrome-extension|about|blob|vbscript):/i.test(trimmed)) {
+    return '';
+  }
 
-  let cleaned = cleanGoogleRedirect(rawUrl.trim());
+  let cleaned = cleanGoogleRedirect(trimmed);
 
   // Ensure scheme exists for URL parser
   if (!/^https?:\/\//i.test(cleaned)) {

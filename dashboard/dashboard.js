@@ -1,8 +1,13 @@
 /**
  * dashboard.js
  * Pro Dashboard Controller for SERPTrack.
- * Handles 20–80 keyword batch management, local project management,
- * CDP location simulation controls, results table, and exports.
+ * 
+ * Strict Privacy-First Architecture:
+ * - Projects and results reside in session memory only (chrome.storage.session).
+ * - Safe DOM text node rendering (Zero unsafe innerHTML).
+ * - Project location configuration is saved per project.
+ * - Project switching is locked during active, paused, or blocked runs.
+ * - Results are strictly bound to project ID.
  */
 
 import {
@@ -24,8 +29,6 @@ import {
   deleteProject,
   getProjectById,
   saveProjectKeywords,
-  getProjectKeywords,
-  getProjectSnapshots,
   promoteCurrentToPrevious,
   exportProjectJson,
   importProjectJson
@@ -48,6 +51,8 @@ const el = {
   btnDeleteProject: document.getElementById('btn-delete-project'),
   btnExportProject: document.getElementById('btn-export-project'),
   btnImportProject: document.getElementById('btn-import-project'),
+  btnClearSession: document.getElementById('btn-clear-session'),
+  btnPrivacyClear: document.getElementById('btn-privacy-clear'),
 
   // Location elements
   useLocationToggle: document.getElementById('use-location-toggle'),
@@ -90,7 +95,6 @@ const el = {
   tabPanes: document.querySelectorAll('.tab-pane'),
   resultsCountBadge: document.getElementById('results-count-badge'),
   keywordsCountBadge: document.getElementById('keywords-count-badge'),
-  snapshotsCountBadge: document.getElementById('snapshots-count-badge'),
 
   // Results Table
   resultsTbody: document.getElementById('results-tbody'),
@@ -106,9 +110,6 @@ const el = {
   btnLoadSample: document.getElementById('btn-load-sample'),
   btnSaveKeywords: document.getElementById('btn-save-keywords'),
 
-  // Snapshots Tab
-  snapshotsList: document.getElementById('snapshots-list'),
-
   // Modals
   projectModal: document.getElementById('project-modal'),
   modalProjectTitle: document.getElementById('modal-project-title'),
@@ -117,6 +118,11 @@ const el = {
   modalProjectGoogle: document.getElementById('modal-project-google'),
   modalProjectDelay: document.getElementById('modal-project-delay'),
   modalProjectDepth: document.getElementById('modal-project-depth'),
+  modalProjectUseLocation: document.getElementById('modal-project-use-location'),
+  modalProjectLocName: document.getElementById('modal-project-loc-name'),
+  modalProjectLat: document.getElementById('modal-project-lat'),
+  modalProjectLon: document.getElementById('modal-project-lon'),
+  modalProjectAcc: document.getElementById('modal-project-acc'),
   btnSaveProjectModal: document.getElementById('btn-save-project-modal'),
   btnCancelProjectModal: document.getElementById('btn-cancel-project-modal'),
   btnCloseProjectModal: document.getElementById('btn-close-project-modal'),
@@ -184,13 +190,13 @@ async function initDashboard() {
 }
 
 /**
- * Loads projects from storage and populates project selector dropdown.
+ * Loads projects from session storage and populates project selector dropdown.
  */
 async function refreshProjectsList() {
   allProjectsMap = await getProjects();
   activeProject = await getActiveProject();
 
-  el.projectSelect.innerHTML = '';
+  el.projectSelect.replaceChildren();
   Object.keys(allProjectsMap).forEach(pId => {
     const proj = allProjectsMap[pId];
     const option = document.createElement('option');
@@ -206,7 +212,8 @@ async function refreshProjectsList() {
 }
 
 /**
- * Loads active project configuration, keywords, and snapshots into UI fields.
+ * Loads active project configuration and keywords into UI fields.
+ * Bug 1 Fix: Explicitly loads that project's exact location configuration.
  * @param {object} proj 
  */
 function loadActiveProjectIntoUI(proj) {
@@ -215,12 +222,12 @@ function loadActiveProjectIntoUI(proj) {
 
   el.progProjectName.textContent = `Project: ${cfg.projectName || 'Default Client'}`;
 
-  // Geolocation
+  // Geolocation simulation per project
   el.useLocationToggle.checked = Boolean(cfg.useLocation);
   el.locName.value = cfg.locationName || '';
   el.locLat.value = cfg.latitude || '';
   el.locLon.value = cfg.longitude || '';
-  el.locAcc.value = cfg.accuracy || 20;
+  el.locAcc.value = cfg.accuracy !== undefined ? cfg.accuracy : 20;
 
   // Search parameters
   el.googleDomain.value = cfg.googleDomain || 'google.com';
@@ -230,10 +237,6 @@ function loadActiveProjectIntoUI(proj) {
   // Keywords
   const keywords = proj.keywords || [];
   renderKeywordsTextarea(keywords);
-
-  // Snapshots
-  const snapshots = proj.snapshots || [];
-  renderSnapshotsList(snapshots);
 }
 
 /**
@@ -249,7 +252,7 @@ function renderKeywordsTextarea(keywords) {
   }
 
   const lines = keywords.map(kw => {
-    const prev = (kw.previousPosition !== null && kw.previousPosition !== undefined && kw.previousPosition !== '—')
+    const prev = (kw.previousPosition !== null && kw.previousPosition !== undefined && kw.previousPosition !== '—' && kw.previousPosition !== '-')
       ? kw.previousPosition
       : '';
     return `${kw.keyword}\t${kw.targetUrl}\t${prev}`;
@@ -271,7 +274,6 @@ function parseKeywordsFromTextarea() {
   const rows = [];
 
   lines.forEach((line, idx) => {
-    // Split by tab, or comma if no tab present
     const parts = line.includes('\t') ? line.split('\t') : line.split(',');
     const keyword = (parts[0] || '').trim();
     const targetUrl = (parts[1] || '').trim();
@@ -279,7 +281,7 @@ function parseKeywordsFromTextarea() {
 
     if (keyword && targetUrl) {
       let prevPos = null;
-      if (rawPrev !== '' && rawPrev !== '—' && rawPrev.toLowerCase() !== 'not found') {
+      if (rawPrev !== '' && rawPrev !== '—' && rawPrev !== '-' && rawPrev.toLowerCase() !== 'not found') {
         const num = Number(rawPrev);
         if (!isNaN(num) && num > 0) prevPos = num;
       }
@@ -318,7 +320,7 @@ function updateLocationStatusBadge(state, details = null, tabId = null) {
   } else if (state === LOCATION_STATES.FAILED || state === 'FAILED') {
     el.locationStatusBadge.classList.add('badge-failed');
     el.locationStatusBadge.textContent = 'LOCATION: OVERRIDE FAILED';
-    el.locationMsg.textContent = 'CDP Geolocation override failed. Check tab permissions.';
+    el.locationMsg.textContent = 'CDP Geolocation override failed or detached. Check tab permissions.';
     el.locationMsg.style.color = 'var(--red-text)';
   } else {
     el.locationStatusBadge.classList.add('badge-not-configured');
@@ -337,7 +339,7 @@ async function syncBackgroundState() {
       currentJobState = response.state;
       renderJobState(response.state);
 
-      // Truthful location state
+      // Location state display
       if (response.state.locationState) {
         updateLocationStatusBadge(
           response.state.locationState,
@@ -356,7 +358,9 @@ async function syncBackgroundState() {
 }
 
 /**
- * Renders job state (counters, progress bar, buttons, table).
+ * Renders job state.
+ * Bug 3 Fix: Disables project switching when RUNNING, PAUSED, or BLOCKED.
+ * Bug 4 Fix: Binds results to active project ID.
  * @param {object} state 
  */
 function renderJobState(state) {
@@ -365,6 +369,10 @@ function renderJobState(state) {
   const status = state.status || 'IDLE';
   el.jobStatusBadge.className = 'badge';
 
+  // Bug 3 Fix: Disable project switching during RUNNING, PAUSED, and BLOCKED
+  const isJobActiveOrBlocked = ['RUNNING', 'PAUSED', 'BLOCKED'].includes(status);
+  el.projectSelect.disabled = isJobActiveOrBlocked;
+
   if (status === 'RUNNING') {
     el.jobStatusBadge.classList.add('badge-running');
     el.jobStatusBadge.textContent = 'STATUS: RUNNING';
@@ -372,7 +380,6 @@ function renderJobState(state) {
     el.btnPause.style.display = 'inline-flex';
     el.btnResume.style.display = 'none';
     el.btnStop.style.display = 'inline-flex';
-    el.projectSelect.disabled = true; // Block project switching during active run!
   } else if (status === 'PAUSED') {
     el.jobStatusBadge.classList.add('badge-configured');
     el.jobStatusBadge.textContent = 'STATUS: PAUSED';
@@ -380,7 +387,6 @@ function renderJobState(state) {
     el.btnPause.style.display = 'none';
     el.btnResume.style.display = 'inline-flex';
     el.btnStop.style.display = 'inline-flex';
-    el.projectSelect.disabled = true;
   } else if (status === 'BLOCKED') {
     el.jobStatusBadge.classList.add('badge-failed');
     el.jobStatusBadge.textContent = 'STATUS: BLOCKED / HALTED';
@@ -388,7 +394,6 @@ function renderJobState(state) {
     el.btnPause.style.display = 'none';
     el.btnResume.style.display = 'inline-flex';
     el.btnStop.style.display = 'inline-flex';
-    el.projectSelect.disabled = false;
   } else if (status === 'COMPLETED') {
     el.jobStatusBadge.classList.add('badge-completed');
     el.jobStatusBadge.textContent = 'STATUS: COMPLETED';
@@ -396,7 +401,6 @@ function renderJobState(state) {
     el.btnPause.style.display = 'none';
     el.btnResume.style.display = 'none';
     el.btnStop.style.display = 'none';
-    el.projectSelect.disabled = false;
   } else {
     el.jobStatusBadge.classList.add('badge-idle');
     el.jobStatusBadge.textContent = `STATUS: ${status}`;
@@ -404,7 +408,6 @@ function renderJobState(state) {
     el.btnPause.style.display = 'none';
     el.btnResume.style.display = 'none';
     el.btnStop.style.display = 'none';
-    el.projectSelect.disabled = false;
   }
 
   // Error Banner
@@ -456,30 +459,70 @@ function renderJobState(state) {
   el.statNotFound.textContent = String(notFound);
   el.statError.textContent = String(errors);
 
-  // Enable / Disable Retry Failed button
-  el.btnRetryFailed.disabled = (errors === 0);
+  // Bug 4 Fix: Enforce results are bound to active project ID before enabling actions
+  const isProjectMatch = Boolean(
+    activeProject && (
+      !state.projectId || 
+      state.projectId === activeProject.id || 
+      state.projectId === activeProject.config?.projectId
+    )
+  );
+  const hasResultsForProject = results.length > 0 && isProjectMatch;
 
-  // Results table
+  el.btnCopyPositions.disabled = !hasResultsForProject;
+  el.btnCopyAll.disabled = !hasResultsForProject;
+  el.btnDownloadCsv.disabled = !hasResultsForProject;
+  el.btnUseAsPrevious.disabled = !hasResultsForProject;
+  el.btnRetryFailed.disabled = !hasResultsForProject || errors === 0;
+
+  // Render results table with project ID isolation
   renderResultsTable(results);
 }
 
 /**
- * Renders the results table preserving exact row order.
+ * Renders the results table with safe DOM text nodes.
+ * Content Security: Zero innerHTML used for client/user data.
+ * Bug 4 Fix: Never displays another project's results.
  * @param {Array<object>} results 
  */
 function renderResultsTable(results) {
-  el.resultsCountBadge.textContent = String(results.length);
+  // Bug 4 Check: If active results belong to a different project, do not display them
+  const isProjectMatch = Boolean(
+    activeProject && currentJobState && (
+      !currentJobState.projectId ||
+      currentJobState.projectId === activeProject.id ||
+      currentJobState.projectId === activeProject.config?.projectId
+    )
+  );
 
-  if (!results || results.length === 0) {
-    el.resultsTbody.innerHTML = `
-      <tr>
-        <td colspan="8" class="empty-state">No rank checks run yet. Enter keywords in the "Keyword Queue" tab and click "START RANK CHECK".</td>
-      </tr>
-    `;
+  if (currentJobState && currentJobState.projectId && !isProjectMatch) {
+    el.resultsCountBadge.textContent = '0';
+    el.resultsTbody.replaceChildren();
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 8;
+    td.className = 'empty-state';
+    td.textContent = 'Active results belong to a different project. Click START RANK CHECK to run a check for this project.';
+    tr.appendChild(td);
+    el.resultsTbody.appendChild(tr);
     return;
   }
 
-  el.resultsTbody.innerHTML = '';
+  el.resultsCountBadge.textContent = String(results ? results.length : 0);
+
+  if (!results || results.length === 0) {
+    el.resultsTbody.replaceChildren();
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 8;
+    td.className = 'empty-state';
+    td.textContent = 'No rank checks run yet. Enter keywords in the "Keyword Queue" tab and click "START RANK CHECK".';
+    tr.appendChild(td);
+    el.resultsTbody.appendChild(tr);
+    return;
+  }
+
+  el.resultsTbody.replaceChildren();
 
   results.forEach((item, idx) => {
     if (!item) return;
@@ -487,7 +530,41 @@ function renderResultsTable(results) {
     const tr = document.createElement('tr');
     const rowNum = (item.originalIndex !== undefined ? item.originalIndex : idx) + 1;
 
-    // Rank pill class
+    // 1. Row number
+    const tdNum = document.createElement('td');
+    tdNum.style.color = 'var(--text-muted)';
+    tdNum.style.fontFamily = 'var(--font-mono)';
+    tdNum.textContent = String(rowNum);
+    tr.appendChild(tdNum);
+
+    // 2. Keyword (safe text node)
+    const tdKw = document.createElement('td');
+    tdKw.style.fontWeight = '600';
+    tdKw.textContent = item.keyword || '';
+    tr.appendChild(tdKw);
+
+    // 3. Target URL (safe text node)
+    const tdUrl = document.createElement('td');
+    const smallUrl = document.createElement('small');
+    smallUrl.style.color = 'var(--text-secondary)';
+    smallUrl.style.wordBreak = 'break-all';
+    smallUrl.textContent = item.targetUrl || '';
+    tdUrl.appendChild(smallUrl);
+    tr.appendChild(tdUrl);
+
+    // 4. Previous Position
+    const tdPrev = document.createElement('td');
+    tdPrev.style.fontFamily = 'var(--font-mono)';
+    tdPrev.style.textAlign = 'center';
+    tdPrev.textContent = (item.previousPosition !== null && item.previousPosition !== undefined && item.previousPosition !== '—')
+      ? String(item.previousPosition)
+      : '—';
+    tr.appendChild(tdPrev);
+
+    // 5. Current Position rank pill
+    const tdCur = document.createElement('td');
+    tdCur.style.textAlign = 'center';
+    const pill = document.createElement('span');
     let rankPillClass = 'rank-pill rank-other';
     let currentPosText = item.displayPosition || item.currentPosition || 'NOT CHECKED';
 
@@ -504,105 +581,88 @@ function renderResultsTable(results) {
     } else {
       rankPillClass = 'rank-pill rank-notfound';
     }
+    pill.className = rankPillClass;
+    pill.textContent = String(currentPosText);
+    tdCur.appendChild(pill);
+    tr.appendChild(tdCur);
 
-    // Change indicator
+    // 6. Change
+    const tdChange = document.createElement('td');
+    tdChange.style.textAlign = 'center';
+    const changeSpan = document.createElement('span');
     let changeClass = 'change-same';
     const changeText = item.change || '—';
     if (changeText.includes('↑')) changeClass = 'change-up';
     else if (changeText.includes('↓')) changeClass = 'change-down';
+    changeSpan.className = changeClass;
+    changeSpan.textContent = changeText;
+    tdChange.appendChild(changeSpan);
+    tr.appendChild(tdChange);
 
-    // Status / depth
+    // 7. Status / Depth
+    const tdStatus = document.createElement('td');
+    tdStatus.style.fontSize = '11px';
+    tdStatus.style.color = 'var(--text-secondary)';
     let statusDepthText = item.status || '—';
     if (item.checkedDepth > 0) {
       statusDepthText += ` (Top ${item.checkedDepth})`;
     }
+    tdStatus.textContent = statusDepthText;
+    tr.appendChild(tdStatus);
 
-    // Found URL & Cannibalization
-    let detailsHtml = '';
+    // 8. Found URL / Cannibalization / Error (Safe DOM nodes only)
+    const tdDetails = document.createElement('td');
+    let hasDetails = false;
+
     if (item.foundUrl) {
-      detailsHtml = `<a href="${item.foundUrl}" target="_blank" style="color: var(--accent-blue-hover); text-decoration: none; word-break: break-all;">${item.foundUrl}</a>`;
+      hasDetails = true;
+      const link = document.createElement('a');
+      link.href = item.foundUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.style.color = 'var(--accent-blue-hover)';
+      link.style.textDecoration = 'none';
+      link.style.wordBreak = 'break-all';
+      link.textContent = item.foundUrl;
+      tdDetails.appendChild(link);
     }
+
     if (item.otherPageFound) {
-      detailsHtml += `<div><span class="cannibalization-flag">Cannibalization: Position ${item.otherPagePosition}</span><br><small style="color: var(--text-muted); word-break: break-all;">${item.otherPageFound}</small></div>`;
+      hasDetails = true;
+      const canDiv = document.createElement('div');
+      canDiv.style.marginTop = '4px';
+      const flag = document.createElement('span');
+      flag.className = 'cannibalization-flag';
+      flag.textContent = `Cannibalization: Position ${item.otherPagePosition || '?'}`;
+      canDiv.appendChild(flag);
+      canDiv.appendChild(document.createElement('br'));
+      const canSmall = document.createElement('small');
+      canSmall.style.color = 'var(--text-muted)';
+      canSmall.style.wordBreak = 'break-all';
+      canSmall.textContent = item.otherPageFound;
+      canDiv.appendChild(canSmall);
+      tdDetails.appendChild(canDiv);
     }
+
     if (item.error) {
-      detailsHtml += `<span style="color: var(--red-text); font-size: 11px;">${item.error}</span>`;
+      hasDetails = true;
+      const errSpan = document.createElement('span');
+      errSpan.style.color = 'var(--red-text)';
+      errSpan.style.fontSize = '11px';
+      errSpan.textContent = item.error;
+      tdDetails.appendChild(errSpan);
     }
-    if (!detailsHtml) detailsHtml = '<span style="color: var(--text-muted);">—</span>';
 
-    tr.innerHTML = `
-      <td style="color: var(--text-muted); font-family: var(--font-mono);">${rowNum}</td>
-      <td style="font-weight: 600;">${escapeHtml(item.keyword)}</td>
-      <td><small style="color: var(--text-secondary); word-break: break-all;">${escapeHtml(item.targetUrl)}</small></td>
-      <td style="font-family: var(--font-mono); text-align: center;">${item.previousPosition || '—'}</td>
-      <td style="text-align: center;"><span class="${rankPillClass}">${currentPosText}</span></td>
-      <td style="text-align: center;"><span class="${changeClass}">${changeText}</span></td>
-      <td style="font-size: 11px; color: var(--text-secondary);">${statusDepthText}</td>
-      <td>${detailsHtml}</td>
-    `;
+    if (!hasDetails) {
+      const dash = document.createElement('span');
+      dash.style.color = 'var(--text-muted)';
+      dash.textContent = '—';
+      tdDetails.appendChild(dash);
+    }
 
+    tr.appendChild(tdDetails);
     el.resultsTbody.appendChild(tr);
   });
-}
-
-/**
- * Renders the snapshot history list.
- * @param {Array<object>} snapshots 
- */
-function renderSnapshotsList(snapshots) {
-  el.snapshotsCountBadge.textContent = String(snapshots.length);
-
-  if (!snapshots || snapshots.length === 0) {
-    el.snapshotsList.innerHTML = '<div style="color: var(--text-muted); padding: 20px; text-align: center;">No snapshots recorded yet. Completed checks will automatically appear here.</div>';
-    return;
-  }
-
-  el.snapshotsList.innerHTML = '';
-
-  snapshots.forEach((snap, idx) => {
-    const item = document.createElement('div');
-    item.className = 'snapshot-item';
-
-    const dateStr = new Date(snap.checkedAt).toLocaleString();
-    const sm = snap.summary || {};
-
-    item.innerHTML = `
-      <div>
-        <div class="snapshot-time">Snapshot #${snapshots.length - idx}: ${dateStr}</div>
-        <div class="snapshot-summary-tags" style="margin-top: 4px;">
-          <span style="font-size: 12px; color: var(--text-secondary);">Total: <strong>${sm.total || 0}</strong></span>
-          <span style="font-size: 12px; color: var(--green-text);">Found: <strong>${sm.found || 0}</strong></span>
-          <span style="font-size: 12px; color: var(--text-muted);">Not Found: <strong>${sm.notFound || 0}</strong></span>
-          <span style="font-size: 12px; color: var(--red-text);">Errors: <strong>${sm.errors || 0}</strong></span>
-        </div>
-      </div>
-      <button class="btn btn-secondary btn-sm" data-snap-idx="${idx}">Download Snapshot CSV</button>
-    `;
-
-    const dlBtn = item.querySelector('button');
-    dlBtn.addEventListener('click', () => {
-      const csvData = exportToCsv(snap.results || []);
-      const filename = `${sanitizeProjectFilename(activeProject.config?.projectName || 'snapshot')}_${snap.checkedAt.split('T')[0]}.csv`;
-      downloadCsv(csvData, filename);
-      showToast(`Downloaded snapshot: ${filename}`, 'success');
-    });
-
-    el.snapshotsList.appendChild(item);
-  });
-}
-
-/**
- * Escapes HTML characters.
- * @param {string} str 
- * @returns {string}
- */
-function escapeHtml(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 /**
@@ -620,12 +680,14 @@ function setupEventListeners() {
     });
   });
 
-  // Project selector switch
+  // Bug 3 Fix: Project selector switch protected during active, paused, or blocked runs
   el.projectSelect.addEventListener('change', async (e) => {
     const selectedId = e.target.value;
-    if (currentJobState && currentJobState.status === 'RUNNING') {
-      showToast('Cannot switch project while a rank check is running!', 'error');
-      e.target.value = activeProject.id;
+    if (currentJobState && ['RUNNING', 'PAUSED', 'BLOCKED'].includes(currentJobState.status)) {
+      showToast('Cannot switch project while a rank check is active, paused, or blocked. Click STOP first!', 'error');
+      if (activeProject) {
+        e.target.value = activeProject.id;
+      }
       return;
     }
     await setActiveProjectId(selectedId);
@@ -634,7 +696,7 @@ function setupEventListeners() {
     showToast(`Switched to project: ${activeProject.config?.projectName || 'Project'}`, 'info');
   });
 
-  // Project CRUD buttons
+  // Bug 1 Fix: Project New/Edit reliably saves location per project
   el.btnNewProject.addEventListener('click', () => {
     el.modalProjectTitle.textContent = 'New Client Project';
     el.modalProjectName.value = '';
@@ -642,6 +704,11 @@ function setupEventListeners() {
     el.modalProjectGoogle.value = 'google.com';
     el.modalProjectDelay.value = '8';
     el.modalProjectDepth.value = '50';
+    if (el.modalProjectUseLocation) el.modalProjectUseLocation.checked = false;
+    if (el.modalProjectLocName) el.modalProjectLocName.value = '';
+    if (el.modalProjectLat) el.modalProjectLat.value = '';
+    if (el.modalProjectLon) el.modalProjectLon.value = '';
+    if (el.modalProjectAcc) el.modalProjectAcc.value = '20';
     el.btnSaveProjectModal.dataset.mode = 'create';
     el.projectModal.style.display = 'flex';
   });
@@ -655,6 +722,11 @@ function setupEventListeners() {
     el.modalProjectGoogle.value = cfg.googleDomain || 'google.com';
     el.modalProjectDelay.value = String(cfg.defaultDelaySeconds || 8);
     el.modalProjectDepth.value = String(cfg.defaultMaxDepth || 50);
+    if (el.modalProjectUseLocation) el.modalProjectUseLocation.checked = Boolean(cfg.useLocation);
+    if (el.modalProjectLocName) el.modalProjectLocName.value = cfg.locationName || '';
+    if (el.modalProjectLat) el.modalProjectLat.value = cfg.latitude || '';
+    if (el.modalProjectLon) el.modalProjectLon.value = cfg.longitude || '';
+    if (el.modalProjectAcc) el.modalProjectAcc.value = String(cfg.accuracy !== undefined ? cfg.accuracy : 20);
     el.btnSaveProjectModal.dataset.mode = 'edit';
     el.projectModal.style.display = 'flex';
   });
@@ -669,13 +741,35 @@ function setupEventListeners() {
       return;
     }
 
+    const useLoc = el.modalProjectUseLocation ? el.modalProjectUseLocation.checked : false;
+    const locName = el.modalProjectLocName ? el.modalProjectLocName.value.trim() : '';
+    let lat = el.modalProjectLat ? el.modalProjectLat.value.trim() : '';
+    let lon = el.modalProjectLon ? el.modalProjectLon.value.trim() : '';
+    let acc = el.modalProjectAcc ? (Number(el.modalProjectAcc.value) || 20) : 20;
+
+    if (useLoc && (lat || lon)) {
+      const val = validateCoordinates(lat, lon, acc);
+      if (!val.valid) {
+        showToast(val.error, 'error');
+        return;
+      }
+      lat = String(val.latitude);
+      lon = String(val.longitude);
+      acc = val.accuracy;
+    }
+
     const mode = el.btnSaveProjectModal.dataset.mode;
     const projectData = {
       projectName: name,
       domain: el.modalProjectDomain.value.trim(),
       googleDomain: el.modalProjectGoogle.value,
-      defaultDelaySeconds: Number(el.modalProjectDelay.value) || 8,
-      defaultMaxDepth: Number(el.modalProjectDepth.value) || 50
+      defaultDelaySeconds: Math.max(5, Number(el.modalProjectDelay.value) || 8),
+      defaultMaxDepth: Number(el.modalProjectDepth.value) || 50,
+      useLocation: useLoc,
+      locationName: locName,
+      latitude: lat,
+      longitude: lon,
+      accuracy: acc
     };
 
     if (mode === 'create') {
@@ -694,7 +788,7 @@ function setupEventListeners() {
     if (!activeProject) return;
     openConfirmModal(
       'Delete Project',
-      `Are you sure you want to permanently delete project "${activeProject.config?.projectName}"? All keywords and local snapshots for this project will be deleted.`,
+      `Are you sure you want to delete session project "${activeProject.config?.projectName}"? All session keywords for this project will be removed.`,
       async () => {
         try {
           await deleteProject(activeProject.id);
@@ -707,12 +801,12 @@ function setupEventListeners() {
     );
   });
 
-  // Export Project JSON
+  // Export Project JSON (Local file download only)
   el.btnExportProject.addEventListener('click', async () => {
     if (!activeProject) return;
     try {
       const jsonStr = await exportProjectJson(activeProject.id);
-      const filename = `${sanitizeProjectFilename(activeProject.config?.projectName || 'project')}_backup.json`;
+      const filename = `${sanitizeProjectFilename(activeProject.config?.projectName || 'project')}_session_export.json`;
       const blob = new Blob([jsonStr], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -720,13 +814,13 @@ function setupEventListeners() {
       a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
-      showToast(`Exported ${filename}`, 'success');
+      showToast(`Exported ${filename} locally.`, 'success');
     } catch (err) {
       showToast(err.message, 'error');
     }
   });
 
-  // Import Project JSON
+  // Import Project JSON (Safe local validation)
   el.btnImportProject.addEventListener('click', () => {
     el.importJsonFile.value = '';
     el.importJsonText.value = '';
@@ -763,6 +857,27 @@ function setupEventListeners() {
     }
   });
 
+  // Clear Session Data Button
+  const handleClearSession = () => {
+    openConfirmModal(
+      'Clear Session Data',
+      'This will stop any active rank check, detach the location simulation debugger, and wipe all projects, keywords, and results from current browser session memory. Harmless preferences will remain. Proceed?',
+      async () => {
+        try {
+          await chrome.runtime.sendMessage({ action: 'CLEAR_SESSION_DATA' });
+          showToast('Session data cleared successfully.', 'info');
+          await refreshProjectsList();
+          await syncBackgroundState();
+        } catch (err) {
+          showToast(err.message, 'error');
+        }
+      }
+    );
+  };
+
+  if (el.btnClearSession) el.btnClearSession.addEventListener('click', handleClearSession);
+  if (el.btnPrivacyClear) el.btnPrivacyClear.addEventListener('click', handleClearSession);
+
   // Confirmation Modal buttons
   el.btnAcceptConfirm.addEventListener('click', () => {
     if (pendingConfirmCallback) pendingConfirmCallback();
@@ -772,6 +887,13 @@ function setupEventListeners() {
   el.btnCloseConfirmModal.addEventListener('click', closeConfirmModal);
 
   // Location Simulation Actions
+  el.useLocationToggle.addEventListener('change', async (e) => {
+    if (activeProject) {
+      await updateProject(activeProject.id, { useLocation: e.target.checked });
+      activeProject.config.useLocation = e.target.checked;
+    }
+  });
+
   el.btnApplyLocation.addEventListener('click', async () => {
     const lat = el.locLat.value.trim();
     const lon = el.locLon.value.trim();
@@ -785,6 +907,21 @@ function setupEventListeners() {
     }
 
     try {
+      if (activeProject) {
+        await updateProject(activeProject.id, {
+          useLocation: true,
+          latitude: String(validation.latitude),
+          longitude: String(validation.longitude),
+          accuracy: validation.accuracy,
+          locationName: locName
+        });
+        activeProject.config.useLocation = true;
+        activeProject.config.latitude = String(validation.latitude);
+        activeProject.config.longitude = String(validation.longitude);
+        activeProject.config.accuracy = validation.accuracy;
+        activeProject.config.locationName = locName;
+      }
+
       const resp = await chrome.runtime.sendMessage({
         action: 'APPLY_LOCATION',
         location: {
@@ -844,6 +981,20 @@ function setupEventListeners() {
       el.locLon.value = '';
       el.locName.value = '';
       el.useLocationToggle.checked = false;
+
+      if (activeProject) {
+        await updateProject(activeProject.id, {
+          useLocation: false,
+          latitude: '',
+          longitude: '',
+          locationName: ''
+        });
+        activeProject.config.useLocation = false;
+        activeProject.config.latitude = '';
+        activeProject.config.longitude = '';
+        activeProject.config.locationName = '';
+      }
+
       showToast('Location override reset.', 'info');
       await syncBackgroundState();
     } catch (err) {
@@ -857,7 +1008,7 @@ function setupEventListeners() {
     const rows = parseKeywordsFromTextarea();
     await saveProjectKeywords(activeProject.id, rows);
     activeProject.keywords = rows;
-    showToast(`Saved ${rows.length} keywords to project.`, 'success');
+    showToast(`Saved ${rows.length} keywords to session project.`, 'success');
     el.keywordsCountBadge.textContent = String(rows.length);
     el.keywordCountLabel.textContent = `${rows.length} keywords in project`;
   });
@@ -895,12 +1046,10 @@ function setupEventListeners() {
     const rows = parseKeywordsFromTextarea();
     if (rows.length === 0) {
       showToast('Please enter at least 1 keyword row.', 'error');
-      // Switch to keywords tab
-      document.querySelector('[data-tab="tab-keywords"]').click();
+      document.querySelector('[data-tab="tab-keywords"]')?.click();
       return;
     }
 
-    // Auto-save keywords to project first
     if (activeProject) {
       await saveProjectKeywords(activeProject.id, rows);
     }
@@ -935,8 +1084,7 @@ function setupEventListeners() {
 
       if (resp && resp.success) {
         showToast(`Rank check started for ${rows.length} keywords.`, 'success');
-        // Switch to Live Results Table tab
-        document.querySelector('[data-tab="tab-results"]').click();
+        document.querySelector('[data-tab="tab-results"]')?.click();
         await syncBackgroundState();
       } else {
         showToast(resp ? resp.message || resp.error : 'Failed to start.', 'error');
@@ -990,10 +1138,14 @@ function setupEventListeners() {
     }
   });
 
-  // Table Export Actions
+  // Bug 4 Fix: Enforce results are bound to active project ID before copying/exporting
   el.btnCopyPositions.addEventListener('click', () => {
     if (!currentJobState || !currentJobState.results || currentJobState.results.length === 0) {
       showToast('No results to copy.', 'error');
+      return;
+    }
+    if (currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
+      showToast('Action disabled: results belong to a different project.', 'error');
       return;
     }
     const tsvData = exportToCurrentPositionsOnly(currentJobState.results);
@@ -1006,6 +1158,10 @@ function setupEventListeners() {
       showToast('No results to copy.', 'error');
       return;
     }
+    if (currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
+      showToast('Action disabled: results belong to a different project.', 'error');
+      return;
+    }
     const tsvData = exportToTsv(currentJobState.results);
     copyToClipboard(tsvData);
     showToast('Copied full results table as TSV.', 'success');
@@ -1016,6 +1172,10 @@ function setupEventListeners() {
       showToast('No results to download.', 'error');
       return;
     }
+    if (currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
+      showToast('Action disabled: results belong to a different project.', 'error');
+      return;
+    }
     const csvData = exportToCsv(currentJobState.results);
     const dateStr = new Date().toISOString().split('T')[0];
     const projName = activeProject ? (activeProject.config?.projectName || activeProject.projectName) : 'rankings';
@@ -1024,10 +1184,17 @@ function setupEventListeners() {
     showToast(`Downloaded CSV: ${filename}`, 'success');
   });
 
-  // Retry Failed
+  // Retry Failed keywords (Bug 4 Fix: sends projectId to verify match)
   el.btnRetryFailed.addEventListener('click', async () => {
+    if (currentJobState && currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
+      showToast('Action disabled: results belong to a different project.', 'error');
+      return;
+    }
     try {
-      const resp = await chrome.runtime.sendMessage({ action: 'RETRY_FAILED_JOB' });
+      const resp = await chrome.runtime.sendMessage({
+        action: 'RETRY_FAILED_JOB',
+        projectId: activeProject ? activeProject.id : null
+      });
       if (resp && resp.success) {
         showToast(`Retrying ${resp.retryingCount} failed keywords...`, 'info');
         await syncBackgroundState();
@@ -1039,11 +1206,15 @@ function setupEventListeners() {
     }
   });
 
-  // Use Current as Previous (Baseline promotion)
+  // Use Current as Previous (Baseline promotion) (Bug 4 Fix)
   el.btnUseAsPrevious.addEventListener('click', () => {
     if (!activeProject) return;
     if (!currentJobState || !currentJobState.results || currentJobState.results.length === 0) {
       showToast('No current results available to set as previous.', 'error');
+      return;
+    }
+    if (currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
+      showToast('Action disabled: results belong to a different project.', 'error');
       return;
     }
 
@@ -1075,6 +1246,10 @@ function setupEventListeners() {
     }
     if (msg.action === 'JOB_BLOCKED') {
       showToast(`Rank check halted: ${msg.message}`, 'error');
+      syncBackgroundState();
+    }
+    if (msg.action === 'SESSION_CLEARED') {
+      refreshProjectsList();
       syncBackgroundState();
     }
   });
