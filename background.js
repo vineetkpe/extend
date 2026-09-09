@@ -2,12 +2,10 @@
  * background.js
  * Hardened Service Worker for Local Rank Checker (Manifest V3).
  * 
- * Fixes addressed:
- * - Bug 1: Real controlled sequential SERP pagination with normal Google URLs (start=0, start=10...).
- * - Bug 2: Strict runId session isolation for every async operation.
- * - Bug 3: Guaranteed PAUSE / STOP preservation (never overwritten by late-returning async tasks).
- * - Bug 4: Interruption-safe, non-hanging waitForDelay system.
- * - Bug 5: Complete debug data flow (keyword, startOffset, checkedDepth, parsedResults).
+ * Race-condition fixes:
+ * 1. PAUSE during active keyword preserves currentIndex without creating an ERROR result or skipping it.
+ * 2. BLOCKED/CAPTCHA state verifies storage and cannot overwrite STOPPED or PAUSED.
+ * 3. RESUME handles the active queue loop lifecycle promise safely (no missed runs, fully idempotent).
  */
 
 import { matchUrl, MATCH_TYPES, normalizeUrl } from './utils/urlNormalizer.js';
@@ -20,7 +18,9 @@ import {
   resetJobState
 } from './utils/storage.js';
 
-let isQueueLoopRunning = false;
+// Queue loop lifecycle management
+let activeQueuePromise = null;
+let activeRunId = null;
 
 /**
  * Generates a unique execution session identifier
@@ -130,9 +130,9 @@ async function sendMessageWithRetry(tabId, message, maxAttempts = 3) {
 }
 
 /**
- * Cancellable, interruption-safe delay system (Fix for Bug 4).
+ * Cancellable, interruption-safe delay system.
  * Periodically polls storage. Resolves immediately if status becomes PAUSED,
- * STOPPED, BLOCKED, or if runId changes. Never hangs or leaves dangling intervals.
+ * STOPPED, BLOCKED, or if runId changes.
  * 
  * @param {string} runId 
  * @param {number} ms 
@@ -150,7 +150,7 @@ function waitForDelay(runId, ms) {
         // 1. If runId changed, abort immediately
         if (state.runId !== runId) {
           clearInterval(intervalId);
-          return resolve({ completed: false, interrupted: true, reason: 'RUN_ID_CHANGED' });
+          return resolve({ completed: false, interrupted: true, reason: 'RUN_INVALIDATED' });
         }
 
         // 2. If status is STOPPED, abort immediately
@@ -179,14 +179,18 @@ function waitForDelay(runId, ms) {
 }
 
 /**
- * Verifies if the given runId is still active and status is RUNNING.
+ * Checks whether an interruption has occurred in storage for the active runId.
  * @param {string} runId 
- * @returns {Promise<boolean>}
+ * @returns {Promise<string|null>} Reason string if interrupted, or null if still RUNNING
  */
-async function isSessionActive(runId) {
-  if (!runId) return false;
+async function getInterruptionReason(runId) {
+  if (!runId) return 'RUN_INVALIDATED';
   const state = await getJobState();
-  return state.runId === runId && state.status === 'RUNNING';
+  if (state.runId !== runId) return 'RUN_INVALIDATED';
+  if (state.status === 'STOPPED') return 'STOPPED';
+  if (state.status === 'PAUSED') return 'PAUSED';
+  if (state.status === 'BLOCKED') return 'BLOCKED';
+  return null;
 }
 
 /**
@@ -202,15 +206,15 @@ function broadcastMessage(msg) {
 }
 
 /**
- * Processes sequential SERP pagination for a single keyword (Fix for Bug 1).
- * Uses normal Google URLs with start=0, start=10, start=20... in the SAME visible tab.
- * Accurately tracks cumulative unique organic results without assuming 10 results per page.
+ * Processes sequential SERP pagination for a single keyword.
+ * Returns explicit interruption reason ('PAUSED' | 'STOPPED' | 'BLOCKED' | 'RUN_INVALIDATED')
+ * so that cancellations are never confused with technical errors.
  * 
  * @param {object} item { keyword, targetUrl, previousPosition, id }
  * @param {number} tabId
  * @param {object} settings
  * @param {string} runId
- * @returns {Promise<{ resultItem: object|null, blocked: boolean, interrupted: boolean }>}
+ * @returns {Promise<{ resultItem: object|null, interrupted: boolean, reason?: string }>}
  */
 async function checkKeywordRanks(item, tabId, settings, runId) {
   const domain = settings.googleDomain || 'google.com';
@@ -227,11 +231,12 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
 
   while (cumulativeResults.length < maxDepth && !exactMatch && consecutiveEmptyPages < 2) {
     // 1. Session Guard Check
-    if (!(await isSessionActive(runId))) {
-      return { resultItem: null, blocked: false, interrupted: true };
+    const earlyReason = await getInterruptionReason(runId);
+    if (earlyReason) {
+      return { resultItem: null, interrupted: true, reason: earlyReason };
     }
 
-    // 2. Build Normal Google Search URL with pagination offset
+    // 2. Build Google Search URL with pagination offset
     const searchUrl = `https://www.${domain}/search?q=${encodeURIComponent(item.keyword)}&start=${offset}`;
 
     await debugLog({
@@ -260,15 +265,16 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
       // Brief dynamic render wait (interruptible)
       const renderWait = await waitForDelay(runId, 1200);
       if (!renderWait.completed) {
-        return { resultItem: null, blocked: false, interrupted: true };
+        return { resultItem: null, interrupted: true, reason: renderWait.reason || 'PAUSED' };
       }
 
       // Re-verify session after async wait
-      if (!(await isSessionActive(runId))) {
-        return { resultItem: null, blocked: false, interrupted: true };
+      const postNavReason = await getInterruptionReason(runId);
+      if (postNavReason) {
+        return { resultItem: null, interrupted: true, reason: postNavReason };
       }
 
-      // 4. Request extraction from content script with full debug context (Bug 5)
+      // 4. Request extraction from content script with full debug context
       const response = await sendMessageWithRetry(tabId, {
         action: 'PARSE_SERP',
         keyword: item.keyword,
@@ -281,7 +287,7 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
       // 5. Handle CAPTCHA / Unusual Traffic
       if (response && response.status === 'BLOCKED') {
         await debugLog(`[LRC] Google interruption / CAPTCHA detected on "${item.keyword}".`);
-        return { resultItem: null, blocked: true, interrupted: false };
+        return { resultItem: null, interrupted: true, reason: 'BLOCKED' };
       }
 
       if (response && response.status === 'SUCCESS') {
@@ -313,7 +319,7 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
           if (matchCheck.match && !exactMatch) {
             exactMatch = organicEntry;
             await debugLog(`[LRC] Exact target page MATCH found at position ${rankPosition}: ${organicEntry.url}`);
-            break; // Target page found! Stop adding more results on this page
+            break; // Stop scanning more results on this page
           }
 
           // Test same domain alternate page (cannibalization)
@@ -355,15 +361,41 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
           await debugLog(`[LRC] Waiting internal pagination delay (3s) before start=${offset}...`);
           const delayRes = await waitForDelay(runId, 3000);
           if (!delayRes.completed) {
-            return { resultItem: null, blocked: false, interrupted: true };
+            return { resultItem: null, interrupted: true, reason: delayRes.reason || 'PAUSED' };
           }
         }
       } else {
         consecutiveEmptyPages++;
       }
     } catch (err) {
+      const errReason = await getInterruptionReason(runId);
+      if (errReason) {
+        return { resultItem: null, interrupted: true, reason: errReason };
+      }
       console.error(`[LRC] Error on startOffset=${offset} for "${item.keyword}":`, err);
       consecutiveEmptyPages++;
+
+      if (consecutiveEmptyPages >= 2 && cumulativeResults.length === 0) {
+        // Genuine technical error
+        return {
+          resultItem: {
+            id: item.id,
+            keyword: item.keyword,
+            targetUrl: item.targetUrl,
+            previousPosition: item.previousPosition,
+            currentPosition: 'Error',
+            displayPosition: 'Error',
+            change: '—',
+            matchStatus: 'ERROR',
+            status: 'ERROR',
+            checkedDepth: 0,
+            foundUrl: null,
+            error: err.message || 'Page navigation or extraction failed.',
+            checkedAt: new Date().toISOString()
+          },
+          interrupted: false
+        };
+      }
     }
   }
 
@@ -417,156 +449,204 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
     checkedAt: new Date().toISOString()
   };
 
-  return { resultItem, blocked: false, interrupted: false };
+  return { resultItem, interrupted: false };
 }
 
 /**
  * Main queue runner loop. Runs while state.status === 'RUNNING' and runId matches.
  * @param {string} runId 
  */
-async function processQueue(runId) {
-  if (isQueueLoopRunning) return;
-  isQueueLoopRunning = true;
+async function runQueueLoop(runId) {
+  while (true) {
+    const state = await getJobState();
+    const settings = await getSettings();
 
-  try {
-    while (true) {
-      // Always re-read fresh state from storage to avoid stale in-memory race conditions
-      const state = await getJobState();
-      const settings = await getSettings();
+    // Guard: must match current active runId and status must be RUNNING
+    if (state.runId !== runId || state.status !== 'RUNNING') {
+      await debugLog(`[LRC] Queue loop halted: status is ${state.status}, active runId is ${state.runId}`);
+      break;
+    }
 
-      // Guard: must match current active runId and status must be RUNNING
-      if (state.runId !== runId || state.status !== 'RUNNING') {
-        await debugLog(`[LRC] Queue loop halted: status is ${state.status}, active runId is ${state.runId}`);
+    if (state.currentIndex >= state.queue.length) {
+      await saveJobState({
+        status: 'COMPLETED',
+        currentKeyword: null,
+        currentSerpOffset: 0,
+        checkedDepth: 0,
+        seenUrls: []
+      });
+      broadcastMessage({ action: 'PROGRESS_UPDATE', state: await getJobState() });
+      await debugLog('[LRC] All keywords completed.');
+      break;
+    }
+
+    const item = state.queue[state.currentIndex];
+    const index = state.currentIndex;
+
+    await debugLog(`[LRC] Processing keyword ${index + 1}/${state.queue.length}: "${item.keyword}"`);
+
+    // Ensure visible search tab exists
+    let tab;
+    try {
+      tab = await ensureSearchTab(state.searchTabId);
+      await saveJobState({ searchTabId: tab.id });
+    } catch (err) {
+      console.error('[LRC] Could not establish search tab:', err);
+      await saveJobState({
+        status: 'ERROR',
+        errorMessage: 'Could not access Google search tab.'
+      });
+      break;
+    }
+
+    // Check ranks across pagination
+    const { resultItem, interrupted, reason } = await checkKeywordRanks(item, tab.id, settings, runId);
+
+    // BUG 1 FIX: If interrupted, DO NOT mark keyword as ERROR and DO NOT advance currentIndex!
+    if (interrupted) {
+      if (reason === 'STOPPED') {
+        await debugLog(`[LRC] Keyword check stopped by user. Halting.`);
         break;
       }
 
-      if (state.currentIndex >= state.queue.length) {
+      if (reason === 'PAUSED') {
+        await debugLog(`[LRC] Keyword check paused on "${item.keyword}". Preserving currentIndex ${index}.`);
         await saveJobState({
-          status: 'COMPLETED',
+          status: 'PAUSED',
           currentKeyword: null,
           currentSerpOffset: 0,
           checkedDepth: 0,
           seenUrls: []
         });
         broadcastMessage({ action: 'PROGRESS_UPDATE', state: await getJobState() });
-        await debugLog('[LRC] All keywords completed.');
         break;
       }
 
-      const item = state.queue[state.currentIndex];
-      const index = state.currentIndex;
-
-      await debugLog(`[LRC] Processing keyword ${index + 1}/${state.queue.length}: "${item.keyword}"`);
-
-      // Ensure visible search tab exists
-      let tab;
-      try {
-        tab = await ensureSearchTab(state.searchTabId);
-        await saveJobState({ searchTabId: tab.id });
-      } catch (err) {
-        console.error('[LRC] Could not establish search tab:', err);
-        await saveJobState({
-          status: 'ERROR',
-          errorMessage: 'Could not access Google search tab.'
-        });
+      if (reason === 'BLOCKED') {
+        // BUG 2 FIX: Verify state priority before writing BLOCKED (STOPPED & PAUSED have higher priority)
+        const checkState = await getJobState();
+        if (checkState.runId === runId && checkState.status !== 'STOPPED' && checkState.status !== 'PAUSED') {
+          await saveJobState({
+            status: 'BLOCKED',
+            errorMessage: 'Google interrupted rank checking. The job has been paused.',
+            currentKeyword: null,
+            currentSerpOffset: 0,
+            checkedDepth: 0,
+            seenUrls: []
+          });
+          broadcastMessage({
+            action: 'JOB_BLOCKED',
+            message: 'Google interrupted rank checking. The job has been paused.'
+          });
+        }
         break;
       }
 
-      // Check ranks across pagination
-      const { resultItem, blocked, interrupted } = await checkKeywordRanks(item, tab.id, settings, runId);
-
-      // Handle CAPTCHA / Interruption
-      if (blocked) {
-        await saveJobState({
-          status: 'BLOCKED',
-          errorMessage: 'Google interrupted rank checking. The job has been paused.'
-        });
-        broadcastMessage({
-          action: 'JOB_BLOCKED',
-          message: 'Google interrupted rank checking. The job has been paused.'
-        });
-        break;
-      }
-
-      // Re-read fresh state from storage before committing result or changing state (Fix for Bug 2 & 3)
-      const latestState = await getJobState();
-
-      // Invalidate if runId changed or user stopped
-      if (latestState.runId !== runId) {
-        await debugLog('[LRC] runId mismatch after keyword check. Aborting without mutating state.');
-        break;
-      }
-      if (latestState.status === 'STOPPED') {
-        await debugLog('[LRC] State is STOPPED. Aborting without mutating state.');
-        break;
-      }
-
-      const wasPaused = (latestState.status === 'PAUSED' || latestState.status === 'BLOCKED');
-
-      // Formulate final result item
-      const finalResult = resultItem || {
-        id: item.id,
-        keyword: item.keyword,
-        targetUrl: item.targetUrl,
-        previousPosition: item.previousPosition,
-        currentPosition: 'Error',
-        displayPosition: 'Error',
-        change: '—',
-        matchStatus: 'ERROR',
-        status: 'ERROR',
-        checkedDepth: 0,
-        foundUrl: null,
-        error: interrupted ? 'Operation paused or interrupted.' : 'Failed to retrieve search results.',
-        checkedAt: new Date().toISOString()
-      };
-
-      const updatedResults = [...(latestState.results || []), finalResult];
-      const nextIndex = index + 1;
-      const isComplete = nextIndex >= latestState.queue.length;
-
-      // Status transition logic: MUST PRESERVE PAUSED OR BLOCKED!
-      let nextStatus;
-      if (wasPaused) {
-        nextStatus = latestState.status; // Remain PAUSED or BLOCKED! Never overwrite with RUNNING.
-      } else if (isComplete) {
-        nextStatus = 'COMPLETED';
-      } else {
-        nextStatus = 'RUNNING';
-      }
-
-      await saveJobState({
-        results: updatedResults,
-        currentIndex: nextIndex,
-        status: nextStatus,
-        currentKeyword: null,
-        currentSerpOffset: 0,
-        checkedDepth: 0,
-        seenUrls: []
-      });
-
-      broadcastMessage({
-        action: 'PROGRESS_UPDATE',
-        state: await getJobState()
-      });
-
-      // If user paused or job completed, DO NOT continue to delay or next keyword
-      if (wasPaused || isComplete) {
-        break;
-      }
-
-      // Enforce inter-keyword delay (minimum 5s, default 8s) using interruptible delay
-      const delaySec = Math.max(5, Number(settings.delaySeconds) || 8);
-      await debugLog(`[LRC] Waiting ${delaySec}s before next keyword...`);
-
-      const delayRes = await waitForDelay(runId, delaySec * 1000);
-      if (!delayRes.completed) {
-        await debugLog(`[LRC] Inter-keyword delay ended: ${delayRes.reason}. Halting loop.`);
-        break;
-      }
+      // reason === 'RUN_INVALIDATED'
+      break;
     }
-  } finally {
-    isQueueLoopRunning = false;
+
+    if (!resultItem) {
+      break;
+    }
+
+    // Re-verify storage state before committing result (BUG 2 & 3 FIX)
+    const latestState = await getJobState();
+
+    if (latestState.runId !== runId) {
+      await debugLog('[LRC] runId mismatch after keyword check. Aborting without mutating state.');
+      break;
+    }
+    if (latestState.status === 'STOPPED') {
+      await debugLog('[LRC] State is STOPPED. Aborting without mutating state.');
+      break;
+    }
+
+    const wasPaused = (latestState.status === 'PAUSED' || latestState.status === 'BLOCKED');
+
+    // Only commit a finished real result (or real technical failure)
+    const updatedResults = [...(latestState.results || []), resultItem];
+    const nextIndex = index + 1;
+    const isComplete = nextIndex >= latestState.queue.length;
+
+    // Status transition: NEVER overwrite PAUSED or BLOCKED with RUNNING
+    let nextStatus;
+    if (wasPaused) {
+      nextStatus = latestState.status;
+    } else if (isComplete) {
+      nextStatus = 'COMPLETED';
+    } else {
+      nextStatus = 'RUNNING';
+    }
+
+    await saveJobState({
+      results: updatedResults,
+      currentIndex: nextIndex,
+      status: nextStatus,
+      currentKeyword: null,
+      currentSerpOffset: 0,
+      checkedDepth: 0,
+      seenUrls: []
+    });
+
+    broadcastMessage({
+      action: 'PROGRESS_UPDATE',
+      state: await getJobState()
+    });
+
+    if (wasPaused || isComplete) {
+      break;
+    }
+
+    // Inter-keyword delay
+    const delaySec = Math.max(5, Number(settings.delaySeconds) || 8);
+    await debugLog(`[LRC] Waiting ${delaySec}s before next keyword...`);
+
+    const delayRes = await waitForDelay(runId, delaySec * 1000);
+    if (!delayRes.completed) {
+      await debugLog(`[LRC] Inter-keyword delay ended: ${delayRes.reason}. Halting loop.`);
+      break;
+    }
   }
+}
+
+/**
+ * BUG 3 FIX: Safe, idempotent queue runner lifecycle.
+ * Waits for any exiting loop to cleanly shut down before starting a new one.
+ * Prevents multiple concurrent loops for the same runId.
+ * 
+ * @param {string} runId 
+ * @returns {Promise<void>}
+ */
+async function startQueueProcessing(runId) {
+  // Idempotent: If loop is already running for the exact same runId, reuse promise
+  if (activeQueuePromise && activeRunId === runId) {
+    await debugLog(`[LRC] Queue loop already actively running for runId ${runId}.`);
+    return activeQueuePromise;
+  }
+
+  // If an old loop is still exiting from a previous pause or stop, wait for it to fully exit
+  if (activeQueuePromise) {
+    await debugLog(`[LRC] Waiting for previous queue loop to exit before starting runId ${runId}...`);
+    try {
+      await activeQueuePromise;
+    } catch (_) {}
+  }
+
+  // Re-verify storage state: must still be RUNNING and match runId
+  const state = await getJobState();
+  if (state.runId !== runId || state.status !== 'RUNNING') {
+    await debugLog(`[LRC] State changed while awaiting old loop exit (status=${state.status}, runId=${state.runId}). Not starting.`);
+    return;
+  }
+
+  activeRunId = runId;
+  activeQueuePromise = runQueueLoop(runId).finally(() => {
+    activeQueuePromise = null;
+    activeRunId = null;
+  });
+
+  return activeQueuePromise;
 }
 
 /**
@@ -588,7 +668,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           await saveSettings(settings);
         }
 
-        // Create a brand new unique execution session runId (Fix for Bug 2)
         const runId = generateRunId();
 
         const state = await saveJobState({
@@ -605,12 +684,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
 
         sendResponse({ success: true, state });
-        processQueue(runId);
+        startQueueProcessing(runId);
         return;
       }
 
       if (request.action === 'PAUSE_JOB') {
-        // Set status to PAUSED immediately (waitForDelay polls and resolves within 250ms)
         const state = await saveJobState({ status: 'PAUSED' });
         sendResponse({ success: true, state });
         return;
@@ -622,7 +700,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (currentState.queue && currentState.currentIndex < currentState.queue.length &&
            (currentState.status === 'PAUSED' || currentState.status === 'BLOCKED')) {
           
-          // Re-use current runId or generate fresh if missing
           const resumeRunId = currentState.runId || generateRunId();
 
           const state = await saveJobState({
@@ -632,7 +709,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           });
 
           sendResponse({ success: true, state });
-          processQueue(resumeRunId);
+          startQueueProcessing(resumeRunId);
           return;
         }
 
@@ -641,7 +718,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       if (request.action === 'STOP_JOB') {
-        // Set status to STOPPED and invalidate runId immediately (Fix for Bug 2 & 3)
+        // Invalidate runId to stop in-flight tasks immediately
         const state = await saveJobState({
           status: 'STOPPED',
           runId: null
