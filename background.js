@@ -688,6 +688,9 @@ export async function commitKeywordResult(runId, resultItem, queueIndex, tabId, 
     ...resultItem,
     originalIndex: itemOriginalIndex,
     projectId: latestState.projectId || null,
+    __commitToken: commitToken,
+    __runId: runId,
+    __keywordIndex: queueIndex,
     commitToken: commitToken,
     commitRunId: runId
   };
@@ -711,12 +714,13 @@ export async function commitKeywordResult(runId, resultItem, queueIndex, tabId, 
   let rollbackRequired = false;
   let rollbackReason = null;
 
-  if (postState.runId !== runId) {
-    rollbackRequired = true;
-    rollbackReason = 'RUN_INVALIDATED';
-  } else if (postState.status === 'STOPPED') {
+  if (postState.status === 'STOPPED') {
     rollbackRequired = true;
     rollbackReason = 'STOPPED';
+  } else if (postState.runId !== runId) {
+    // Run ID changed (a new run started). Exit silently without mutating the new run's state!
+    await debugLog(`[LRC Two-Phase Commit] runId changed (${runId} -> ${postState.runId}) during write. Exiting silently.`);
+    return { committed: false, reason: 'RUN_INVALIDATED' };
   } else if (postState.status === 'PAUSED') {
     rollbackRequired = true;
     rollbackReason = 'PAUSED';
@@ -727,29 +731,54 @@ export async function commitKeywordResult(runId, resultItem, queueIndex, tabId, 
     rollbackRequired = true;
     rollbackReason = postState.status;
   } else {
-    // Run post-write location integrity check
-    const postIntegrity = await verifyLocationIntegrity({
-      runId,
-      tabId: expectedTabId,
-      jobSettings
-    });
+    // Confirm candidate exists in storage with matching commitToken
+    const candidateInStorage = postState.results && postState.results[itemOriginalIndex];
+    const tokenMatches = candidateInStorage && (
+      candidateInStorage.__commitToken === commitToken ||
+      candidateInStorage.commitToken === commitToken
+    );
 
-    if (!postIntegrity.valid) {
+    if (!tokenMatches) {
       rollbackRequired = true;
-      rollbackReason = postIntegrity.reason || 'LOCATION_LOST';
+      rollbackReason = 'CANDIDATE_MISSING_OR_CORRUPTED';
+    } else {
+      // Run post-write location integrity check
+      const postIntegrity = await verifyLocationIntegrity({
+        runId,
+        tabId: expectedTabId,
+        jobSettings
+      });
+
+      if (!postIntegrity.valid) {
+        rollbackRequired = true;
+        rollbackReason = postIntegrity.reason || 'LOCATION_LOST';
+      }
     }
   }
 
-  // PHASE 2 - STEP 4: Handle Rollback if post-write verification failed
+  // PHASE 2 - STEP 4: Rollback execution if validation failed
   if (rollbackRequired) {
     await debugLog(`[LRC Two-Phase Commit] Post-write verification failed (${rollbackReason}). Initiating targeted rollback for token ${commitToken}...`);
 
     const rollbackState = await getJobState();
+
+    // If a new run was started while handling rollback, exit silently
+    if (rollbackState.runId && rollbackState.runId !== runId && rollbackState.status === 'RUNNING') {
+      return { committed: false, reason: 'RUN_INVALIDATED' };
+    }
+
     const cleanedResults = [...(rollbackState.results || [])];
 
     // Remove ONLY the result belonging to this specific candidate commitToken
-    if (cleanedResults[itemOriginalIndex] && cleanedResults[itemOriginalIndex].commitToken === commitToken) {
-      cleanedResults[itemOriginalIndex] = preResults[itemOriginalIndex] || null;
+    if (cleanedResults[itemOriginalIndex] && (
+      cleanedResults[itemOriginalIndex].__commitToken === commitToken ||
+      cleanedResults[itemOriginalIndex].commitToken === commitToken
+    )) {
+      if (itemOriginalIndex < preResults.length) {
+        cleanedResults[itemOriginalIndex] = preResults[itemOriginalIndex];
+      } else {
+        cleanedResults.splice(itemOriginalIndex, 1);
+      }
     }
 
     // Clean any trailing null items
@@ -767,10 +796,6 @@ export async function commitKeywordResult(runId, resultItem, queueIndex, tabId, 
       results: cleanedResults,
       currentIndex: queueIndex,
       status: finalStatus,
-      locationApplied: false,
-      locationState: LOCATION_STATES.FAILED,
-      locationTabId: null,
-      appliedLocation: null,
       currentKeyword: null,
       currentSerpOffset: 0,
       checkedDepth: 0,
@@ -778,6 +803,10 @@ export async function commitKeywordResult(runId, resultItem, queueIndex, tabId, 
     };
 
     if (finalStatus === 'BLOCKED') {
+      rollbackUpdates.locationApplied = false;
+      rollbackUpdates.locationState = LOCATION_STATES.FAILED;
+      rollbackUpdates.locationTabId = null;
+      rollbackUpdates.appliedLocation = null;
       rollbackUpdates.errorMessage = errorMsg;
       rollbackUpdates.lastError = errorMsg;
     }
@@ -801,11 +830,29 @@ export async function commitKeywordResult(runId, resultItem, queueIndex, tabId, 
   }
 
   // PHASE 2 - STEP 5: Post-write verification PASSED -> Finalize commit and advance currentIndex
+  // Clean temporary commit metadata from the finalized result item
+  const finalizedResults = [...(postState.results || [])];
+  if (finalizedResults[itemOriginalIndex]) {
+    const candidateObj = finalizedResults[itemOriginalIndex];
+    const {
+      __commitToken,
+      __runId,
+      __keywordIndex,
+      ...cleanItem
+    } = candidateObj;
+
+    finalizedResults[itemOriginalIndex] = {
+      ...cleanItem,
+      committed: true
+    };
+  }
+
   const nextIndex = queueIndex + 1;
   const isComplete = nextIndex >= (postState.queue ? postState.queue.length : 0);
   const nextStatus = isComplete ? 'COMPLETED' : 'RUNNING';
 
   const finalizedState = await saveJobState({
+    results: finalizedResults,
     currentIndex: nextIndex,
     status: nextStatus,
     currentKeyword: null,

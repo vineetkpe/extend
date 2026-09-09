@@ -74,6 +74,8 @@ export function isValidTargetUrl(rawUrl) {
   }
 }
 
+export const isSafeUrl = isValidTargetUrl;
+
 /**
  * Normalizes a URL for comparison:
  * - Trims whitespace
