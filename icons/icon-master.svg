@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Background Gradient: Deep dark navy/slate -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#070c18" />
+      <stop offset="50%" stop-color="#0d1527" />
+      <stop offset="100%" stop-color="#090e1c" />
+    </linearGradient>
+
+    <!-- Subtle Inner Stroke Gradient -->
+    <linearGradient id="strokeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#334155" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+
+    <!-- Bar 1 Gradient (Electric Cyan / Sky Blue) -->
+    <linearGradient id="bar1Grad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#00f0ff" />
+    </linearGradient>
+
+    <!-- Bar 2 Gradient (Vibrant Blue) -->
+    <linearGradient id="bar2Grad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#1d4ed8" />
+      <stop offset="100%" stop-color="#3b82f6" />
+    </linearGradient>
+
+    <!-- Bar 3 Gradient (Royal Indigo / Violet) -->
+    <linearGradient id="bar3Grad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#4338ca" />
+      <stop offset="100%" stop-color="#818cf8" />
+    </linearGradient>
+
+    <!-- Growth Arrow Gradient (Luminous Cyan to Electric Blue to White) -->
+    <linearGradient id="arrowGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00e5ff" />
+      <stop offset="60%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#ffffff" />
+    </linearGradient>
+
+    <!-- Subtle glow filter -->
+    <filter id="subtleGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="32" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base Squircle Container (Safe margin away from extreme edges) -->
+  <rect x="64" y="64" width="896" height="896" rx="208" ry="208" fill="url(#bgGrad)" stroke="url(#strokeGrad)" stroke-width="16" />
+
+  <!-- Ambient Light / Subtle Rank Growth Glow -->
+  <circle cx="720" cy="280" r="180" fill="#0284c7" opacity="0.18" filter="url(#subtleGlow)" />
+
+  <!-- Ranking Step 1: Base Bar -->
+  <rect x="210" y="550" width="140" height="250" rx="30" fill="url(#bar1Grad)" />
+
+  <!-- Ranking Step 2: Middle Climbing Bar -->
+  <rect x="390" y="400" width="140" height="400" rx="30" fill="url(#bar2Grad)" />
+
+  <!-- Ranking Step 3: Top Rank Bar (#1 Position) -->
+  <rect x="570" y="280" width="140" height="520" rx="30" fill="url(#bar3Grad)" />
+
+  <!-- Arrow Knockout / Shadow for crisp layered depth -->
+  <path d="M 640 148 L 814 148 C 830 148 842 160 842 176 L 842 350 C 842 368 820 378 806 364 L 752 310 L 512 550 C 502 560 486 560 476 550 L 434 508 C 424 498 424 482 434 472 L 674 232 L 620 178 C 606 164 616 148 640 148 Z" fill="#070c18" opacity="0.5" />
+
+  <!-- Bold Upward Growth Arrow (Ascending to #1 Rank) -->
+  <path d="M 650 160 L 804 160 C 816 160 826 170 826 182 L 826 336 C 826 350 809 358 798 347 L 748 297 L 522 523 C 514 531 502 531 494 523 L 463 492 C 455 484 455 472 463 464 L 689 238 L 639 188 C 628 177 636 160 650 160 Z" fill="url(#arrowGrad)" />
+</svg>
