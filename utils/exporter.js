@@ -168,3 +168,68 @@ export function sanitizeProjectFilename(name) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'project';
 }
+
+/**
+ * Copies text to the system clipboard with robust cross-browser fallbacks.
+ * @param {string} text 
+ * @returns {Promise<boolean>}
+ */
+export async function copyToClipboard(text) {
+  if (typeof text !== 'string') {
+    text = String(text || '');
+  }
+
+  // 1. Try modern navigator.clipboard API
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {
+    // Fall back to execCommand if permission denied or unavailable
+  }
+
+  // 2. Fallback using temporary textarea
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '-9999px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const success = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return Boolean(success);
+  } catch (err) {
+    console.error('Failed to copy to clipboard:', err);
+    return false;
+  }
+}
+
+/**
+ * Triggers a browser download of a CSV file using a Blob object URL.
+ * @param {string} csvContent 
+ * @param {string} filename 
+ */
+export function downloadCsv(csvContent, filename) {
+  try {
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'rank_results.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 1000);
+  } catch (err) {
+    console.error('Failed to download CSV:', err);
+  }
+}
+

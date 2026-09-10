@@ -12,58 +12,63 @@
  */
 
 import { parseInputRows } from '../utils/parser.js';
-import { exportToTsv, exportToCsv, exportToCurrentPositionsOnly, copyToClipboard } from '../utils/exporter.js';
-import { getInputText, saveInputText, isSessionStorageAvailable, SESSION_STORAGE_UNAVAILABLE_ERROR } from '../utils/storage.js';
+import {
+  exportToTsv,
+  exportToCsv,
+  exportToCurrentPositionsOnly,
+  copyToClipboard,
+  downloadCsv,
+  sanitizeProjectFilename
+} from '../utils/exporter.js';
+import {
+  getInputText,
+  saveInputText,
+  isSessionStorageAvailable,
+  SESSION_STORAGE_UNAVAILABLE_ERROR
+} from '../utils/storage.js';
 import { validateCoordinates } from '../utils/locationValidator.js';
-import { getProjects, getActiveProject, setActiveProjectId, updateProject } from '../utils/projectManager.js';
+import {
+  getProjects,
+  getActiveProject,
+  setActiveProjectId,
+  updateProject
+} from '../utils/projectManager.js';
 
-// DOM Elements
-const statusBadge = document.getElementById('statusBadge');
-const alertBanner = document.getElementById('alertBanner');
-const alertMessage = document.getElementById('alertMessage');
-const keywordInput = document.getElementById('keywordInput');
-const validationBox = document.getElementById('validationBox');
+// Safe DOM element helper
+function getEl(id, required = false) {
+  const el = document.getElementById(id);
+  if (!el && required) {
+    console.error(`[Popup Init] Missing expected DOM element: #${id}`);
+  }
+  return el;
+}
 
-// Dashboard & Project Switcher Elements
-const popupProjectSelect = document.getElementById('popupProjectSelect');
-const btnOpenDashboard = document.getElementById('btnOpenDashboard');
-const btnCopyPositionsOnly = document.getElementById('btnCopyPositionsOnly');
-const btnPopupClearSession = document.getElementById('btnPopupClearSession');
+// Safe button click binder
+function bindButton(id, handler) {
+  const el = document.getElementById(id);
+  if (!el) {
+    console.warn(`[Popup Init] Button not found for binding: #${id}`);
+    return null;
+  }
+  el.addEventListener('click', handler);
+  return el;
+}
 
-const googleDomainSelect = document.getElementById('googleDomain');
-const maxPositionSelect = document.getElementById('maxPosition');
-const delaySecondsInput = document.getElementById('delaySeconds');
-const debugModeCheckbox = document.getElementById('debugMode');
-
-// Location Simulation DOM Elements
-const useLocationCheckbox = document.getElementById('useLocation');
-const locationStatusIndicator = document.getElementById('locationStatusIndicator');
-const locationFieldsGrid = document.getElementById('locationFieldsGrid');
-const locationNameInput = document.getElementById('locationName');
-const accuracyInput = document.getElementById('accuracy');
-const latitudeInput = document.getElementById('latitude');
-const longitudeInput = document.getElementById('longitude');
-const locationValidationMsg = document.getElementById('locationValidationMsg');
-const btnApplyLocation = document.getElementById('btnApplyLocation');
-const btnTestLocation = document.getElementById('btnTestLocation');
-const btnResetLocation = document.getElementById('btnResetLocation');
-
-const btnStart = document.getElementById('btnStart');
-const btnPause = document.getElementById('btnPause');
-const btnResume = document.getElementById('btnResume');
-const btnStop = document.getElementById('btnStop');
-const btnClear = document.getElementById('btnClear');
-
-const progressSection = document.getElementById('progressSection');
-const progressText = document.getElementById('progressText');
-const progressPercent = document.getElementById('progressPercent');
-const progressBar = document.getElementById('progressBar');
-
-const resultsCount = document.getElementById('resultsCount');
-const resultsTableBody = document.getElementById('resultsTableBody');
-const btnCopy = document.getElementById('btnCopy');
-const btnDownloadCsv = document.getElementById('btnDownloadCsv');
-const toast = document.getElementById('toast');
+// Visible error banner display
+function showPopupError(msg) {
+  const errEl = getEl('errorMessage');
+  if (errEl) {
+    if (msg) {
+      errEl.textContent = msg;
+      errEl.classList.remove('hidden');
+      errEl.style.display = 'block';
+    } else {
+      errEl.textContent = '';
+      errEl.classList.add('hidden');
+      errEl.style.display = 'none';
+    }
+  }
+}
 
 // Active local state
 let currentResults = [];
@@ -71,10 +76,52 @@ let currentStatus = 'IDLE';
 let currentJobState = null;
 let activeProject = null;
 
+// DOM references (resolved on init)
+let statusBadge = null;
+let alertBanner = null;
+let alertMessage = null;
+let keywordInput = null;
+let validationBox = null;
+let popupProjectSelect = null;
+let btnOpenDashboard = null;
+let btnCopyPositionsOnly = null;
+let btnPopupClearSession = null;
+let googleDomainSelect = null;
+let maxPositionSelect = null;
+let delaySecondsInput = null;
+let debugModeCheckbox = null;
+let useLocationCheckbox = null;
+let locationStatusIndicator = null;
+let locationFieldsGrid = null;
+let locationNameInput = null;
+let accuracyInput = null;
+let latitudeInput = null;
+let longitudeInput = null;
+let locationValidationMsg = null;
+let btnApplyLocation = null;
+let btnTestLocation = null;
+let btnResetLocation = null;
+let btnStart = null;
+let btnPause = null;
+let btnResume = null;
+let btnStop = null;
+let btnClear = null;
+let progressSection = null;
+let progressText = null;
+let progressPercent = null;
+let progressBar = null;
+let resultsCount = null;
+let resultsTableBody = null;
+let btnCopy = null;
+let btnDownloadCsv = null;
+let toast = null;
+
 /**
  * Shows temporary toast notification
  */
 function showToast(text) {
+  if (!toast) toast = getEl('toast');
+  if (!toast) return;
   toast.textContent = text;
   toast.classList.remove('hidden');
   setTimeout(() => {
@@ -155,15 +202,19 @@ function showLocationMessage(msg, isSuccess = false) {
  */
 function renderStatus(status, errorMessage = null) {
   currentStatus = status || 'IDLE';
-  statusBadge.textContent = currentStatus;
-  statusBadge.className = `status-badge status-${currentStatus.toLowerCase()}`;
+  if (statusBadge) {
+    statusBadge.textContent = currentStatus;
+    statusBadge.className = `status-badge status-${currentStatus.toLowerCase()}`;
+  }
 
   // Alert banner for Google interruption / location loss
-  if (status === 'BLOCKED') {
-    alertBanner.classList.remove('hidden');
-    alertMessage.textContent = errorMessage || 'Rank checking was interrupted. Job halted.';
-  } else {
-    alertBanner.classList.add('hidden');
+  if (alertBanner && alertMessage) {
+    if (status === 'BLOCKED') {
+      alertBanner.classList.remove('hidden');
+      alertMessage.textContent = errorMessage || 'Rank checking was interrupted. Job halted.';
+    } else {
+      alertBanner.classList.add('hidden');
+    }
   }
 
   // Bug 3 Fix: Disable project switching during active, paused, or blocked runs
@@ -174,16 +225,18 @@ function renderStatus(status, errorMessage = null) {
   // Button & Input states
   switch (currentStatus) {
     case 'RUNNING':
-      btnStart.disabled = true;
-      btnPause.disabled = false;
-      btnPause.classList.remove('hidden');
-      btnResume.classList.add('hidden');
-      btnStop.disabled = false;
-      btnClear.disabled = true;
-      keywordInput.disabled = true;
-      googleDomainSelect.disabled = true;
+      if (btnStart) btnStart.disabled = true;
+      if (btnPause) {
+        btnPause.disabled = false;
+        btnPause.classList.remove('hidden');
+      }
+      if (btnResume) btnResume.classList.add('hidden');
+      if (btnStop) btnStop.disabled = false;
+      if (btnClear) btnClear.disabled = true;
+      if (keywordInput) keywordInput.disabled = true;
+      if (googleDomainSelect) googleDomainSelect.disabled = true;
       if (maxPositionSelect) maxPositionSelect.disabled = true;
-      delaySecondsInput.disabled = true;
+      if (delaySecondsInput) delaySecondsInput.disabled = true;
       if (debugModeCheckbox) debugModeCheckbox.disabled = true;
       if (useLocationCheckbox) useLocationCheckbox.disabled = true;
       if (btnApplyLocation) btnApplyLocation.disabled = true;
@@ -193,42 +246,46 @@ function renderStatus(status, errorMessage = null) {
 
     case 'PAUSED':
     case 'BLOCKED':
-      btnStart.disabled = true;
-      btnPause.classList.add('hidden');
-      btnResume.classList.remove('hidden');
-      btnResume.disabled = false;
-      btnStop.disabled = false;
-      btnClear.disabled = false;
-      keywordInput.disabled = false;
-      googleDomainSelect.disabled = false;
+      if (btnStart) btnStart.disabled = true;
+      if (btnPause) btnPause.classList.add('hidden');
+      if (btnResume) {
+        btnResume.classList.remove('hidden');
+        btnResume.disabled = false;
+      }
+      if (btnStop) btnStop.disabled = false;
+      if (btnClear) btnClear.disabled = false;
+      if (keywordInput) keywordInput.disabled = false;
+      if (googleDomainSelect) googleDomainSelect.disabled = false;
       if (maxPositionSelect) maxPositionSelect.disabled = false;
-      delaySecondsInput.disabled = false;
+      if (delaySecondsInput) delaySecondsInput.disabled = false;
       if (debugModeCheckbox) debugModeCheckbox.disabled = false;
       if (useLocationCheckbox) useLocationCheckbox.disabled = false;
-      if (btnApplyLocation) btnApplyLocation.disabled = !useLocationCheckbox.checked;
-      if (btnTestLocation) btnTestLocation.disabled = !useLocationCheckbox.checked;
-      if (btnResetLocation) btnResetLocation.disabled = !useLocationCheckbox.checked;
+      if (btnApplyLocation) btnApplyLocation.disabled = !useLocationCheckbox?.checked;
+      if (btnTestLocation) btnTestLocation.disabled = !useLocationCheckbox?.checked;
+      if (btnResetLocation) btnResetLocation.disabled = !useLocationCheckbox?.checked;
       break;
 
     case 'STOPPED':
     case 'COMPLETED':
     case 'IDLE':
     default:
-      btnStart.disabled = false;
-      btnPause.classList.remove('hidden');
-      btnPause.disabled = true;
-      btnResume.classList.add('hidden');
-      btnStop.disabled = true;
-      btnClear.disabled = false;
-      keywordInput.disabled = false;
-      googleDomainSelect.disabled = false;
+      if (btnStart) btnStart.disabled = false;
+      if (btnPause) {
+        btnPause.classList.remove('hidden');
+        btnPause.disabled = true;
+      }
+      if (btnResume) btnResume.classList.add('hidden');
+      if (btnStop) btnStop.disabled = true;
+      if (btnClear) btnClear.disabled = false;
+      if (keywordInput) keywordInput.disabled = false;
+      if (googleDomainSelect) googleDomainSelect.disabled = false;
       if (maxPositionSelect) maxPositionSelect.disabled = false;
-      delaySecondsInput.disabled = false;
+      if (delaySecondsInput) delaySecondsInput.disabled = false;
       if (debugModeCheckbox) debugModeCheckbox.disabled = false;
       if (useLocationCheckbox) useLocationCheckbox.disabled = false;
-      if (btnApplyLocation) btnApplyLocation.disabled = !useLocationCheckbox.checked;
-      if (btnTestLocation) btnTestLocation.disabled = !useLocationCheckbox.checked;
-      if (btnResetLocation) btnResetLocation.disabled = !useLocationCheckbox.checked;
+      if (btnApplyLocation) btnApplyLocation.disabled = !useLocationCheckbox?.checked;
+      if (btnTestLocation) btnTestLocation.disabled = !useLocationCheckbox?.checked;
+      if (btnResetLocation) btnResetLocation.disabled = !useLocationCheckbox?.checked;
       break;
   }
 }
@@ -239,6 +296,8 @@ function renderStatus(status, errorMessage = null) {
  * Bug 4 Fix: Never displays another project's results.
  */
 function renderResultsTable(results) {
+  if (!resultsTableBody) return;
+
   // Bug 4 Check: Results bound to project ID
   const isProjectMatch = Boolean(
     activeProject && currentJobState && (
@@ -250,7 +309,7 @@ function renderResultsTable(results) {
 
   if (currentJobState && currentJobState.projectId && !isProjectMatch) {
     currentResults = [];
-    resultsCount.textContent = '0 checked';
+    if (resultsCount) resultsCount.textContent = '0 checked';
     resultsTableBody.replaceChildren();
     const tr = document.createElement('tr');
     tr.className = 'empty-row';
@@ -264,7 +323,7 @@ function renderResultsTable(results) {
   }
 
   currentResults = results || [];
-  resultsCount.textContent = `${currentResults.length} checked`;
+  if (resultsCount) resultsCount.textContent = `${currentResults.length} checked`;
 
   if (currentResults.length === 0) {
     resultsTableBody.replaceChildren();
@@ -398,6 +457,7 @@ function renderResultsTable(results) {
  * Updates the progress indicator bar and text
  */
 function renderProgress(currentIndex, total) {
+  if (!progressSection) return;
   if (!total || total === 0) {
     progressSection.classList.add('hidden');
     return;
@@ -407,65 +467,88 @@ function renderProgress(currentIndex, total) {
   const checked = Math.min(currentIndex, total);
   const percent = Math.round((checked / total) * 100);
 
-  progressText.textContent = `Checked keyword ${checked} of ${total}`;
-  progressPercent.textContent = `${percent}%`;
-  progressBar.style.width = `${percent}%`;
+  if (progressText) progressText.textContent = `Checking keyword ${checked} of ${total}`;
+  if (progressPercent) progressPercent.textContent = `${percent}%`;
+  if (progressBar) progressBar.style.width = `${percent}%`;
 }
 
 /**
  * Validates textarea content and displays error messages with safe DOM nodes
  */
 function validateInput() {
+  if (!keywordInput) return { valid: [], errors: [] };
   const text = keywordInput.value.trim();
   if (!text) {
-    validationBox.classList.add('hidden');
-    validationBox.replaceChildren();
+    if (validationBox) {
+      validationBox.classList.add('hidden');
+      validationBox.replaceChildren();
+    }
     return { valid: [], errors: [] };
   }
 
   const parsed = parseInputRows(text);
-  if (parsed.errors.length > 0) {
-    validationBox.classList.remove('hidden');
-    validationBox.replaceChildren();
+  if (validationBox) {
+    if (parsed.errors.length > 0) {
+      validationBox.classList.remove('hidden');
+      validationBox.replaceChildren();
 
-    const strong = document.createElement('strong');
-    strong.textContent = 'Format errors detected:';
-    validationBox.appendChild(strong);
+      const strong = document.createElement('strong');
+      strong.textContent = 'Format errors detected:';
+      validationBox.appendChild(strong);
 
-    const ul = document.createElement('ul');
-    ul.style.margin = '4px 0 0 16px';
-    ul.style.padding = '0';
+      const ul = document.createElement('ul');
+      ul.style.margin = '4px 0 0 16px';
+      ul.style.padding = '0';
 
-    parsed.errors.slice(0, 3).forEach(e => {
-      const li = document.createElement('li');
-      li.textContent = `Line ${e.line}: ${e.message}`;
-      ul.appendChild(li);
-    });
+      parsed.errors.slice(0, 3).forEach(e => {
+        const li = document.createElement('li');
+        li.textContent = `Line ${e.line}: ${e.message}`;
+        ul.appendChild(li);
+      });
 
-    if (parsed.errors.length > 3) {
-      const liMore = document.createElement('li');
-      liMore.textContent = `...and ${parsed.errors.length - 3} more errors`;
-      ul.appendChild(liMore);
+      if (parsed.errors.length > 3) {
+        const liMore = document.createElement('li');
+        liMore.textContent = `...and ${parsed.errors.length - 3} more errors`;
+        ul.appendChild(liMore);
+      }
+      validationBox.appendChild(ul);
+    } else {
+      validationBox.classList.add('hidden');
+      validationBox.replaceChildren();
     }
-    validationBox.appendChild(ul);
-  } else {
-    validationBox.classList.add('hidden');
-    validationBox.replaceChildren();
   }
 
   return parsed;
 }
 
 /**
+ * Auto-saves harmless general settings
+ */
+function saveCurrentSettings() {
+  if (!googleDomainSelect || !delaySecondsInput) return;
+  const settings = {
+    googleDomain: googleDomainSelect.value,
+    maxPosition: parseInt(maxPositionSelect ? maxPositionSelect.value : 50, 10) || 50,
+    delaySeconds: Math.max(5, parseInt(delaySecondsInput.value, 10) || 8),
+    debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false
+  };
+  chrome.runtime.sendMessage({
+    action: 'SAVE_SETTINGS',
+    settings: settings
+  });
+}
+
+/**
  * Initializes state by querying the background worker and loading active project
  */
-async function initialize() {
+async function initializeState() {
   if (!isSessionStorageAvailable()) {
-    const alertEl = document.getElementById('sessionStorageAlert');
+    const alertEl = getEl('sessionStorageAlert');
     if (alertEl) {
       alertEl.style.display = 'block';
     }
     showToast(SESSION_STORAGE_UNAVAILABLE_ERROR);
+    showPopupError(SESSION_STORAGE_UNAVAILABLE_ERROR);
     if (btnStart) btnStart.disabled = true;
     return;
   }
@@ -480,7 +563,7 @@ async function initialize() {
         const opt = document.createElement('option');
         opt.value = pId;
         opt.textContent = projects[pId].config?.projectName || projects[pId].projectName || 'Untitled Project';
-        if (pId === activeProject.id || pId === activeProject.config?.projectId) opt.selected = true;
+        if (pId === activeProject?.id || pId === activeProject?.config?.projectId) opt.selected = true;
         popupProjectSelect.appendChild(opt);
       });
     }
@@ -494,31 +577,39 @@ async function initialize() {
       if (longitudeInput) longitudeInput.value = cfg.longitude || '';
       if (accuracyInput) accuracyInput.value = cfg.accuracy !== undefined ? cfg.accuracy : 20;
 
-      if (activeProject.keywords && activeProject.keywords.length > 0 && !keywordInput.value) {
+      if (activeProject.keywords && activeProject.keywords.length > 0 && keywordInput && !keywordInput.value) {
         const lines = activeProject.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
         keywordInput.value = lines.join('\n');
       }
     }
-  } catch (_) {}
+  } catch (err) {
+    console.error('[Popup] Error loading project state:', err);
+  }
 
   // Load cached input text if empty
-  const savedText = await getInputText();
-  if (savedText && !keywordInput.value) {
-    keywordInput.value = savedText;
-  }
+  try {
+    const savedText = await getInputText();
+    if (savedText && keywordInput && !keywordInput.value) {
+      keywordInput.value = savedText;
+    }
+  } catch (_) {}
 
   // Request current state and settings from background
   chrome.runtime.sendMessage({ action: 'GET_STATE' }, (response) => {
-    if (chrome.runtime.lastError || !response) return;
+    if (chrome.runtime.lastError) {
+      console.warn('[Popup] GET_STATE note:', chrome.runtime.lastError.message);
+      return;
+    }
+    if (!response) return;
 
     const { state, settings } = response;
     currentJobState = state;
 
     // Apply settings
     if (settings) {
-      if (settings.googleDomain) googleDomainSelect.value = settings.googleDomain;
+      if (settings.googleDomain && googleDomainSelect) googleDomainSelect.value = settings.googleDomain;
       if (settings.maxPosition && maxPositionSelect) maxPositionSelect.value = String(settings.maxPosition);
-      if (settings.delaySeconds) delaySecondsInput.value = settings.delaySeconds;
+      if (settings.delaySeconds && delaySecondsInput) delaySecondsInput.value = settings.delaySeconds;
       if (debugModeCheckbox) debugModeCheckbox.checked = Boolean(settings.debugMode);
     }
 
@@ -542,261 +633,238 @@ async function initialize() {
   });
 }
 
-// Bug 3 Fix: Project switcher listener with run-state lock
-if (popupProjectSelect) {
-  popupProjectSelect.addEventListener('change', async (e) => {
-    if (['RUNNING', 'PAUSED', 'BLOCKED'].includes(currentStatus)) {
-      showToast('Cannot switch project while a job is active, paused, or blocked!');
-      if (activeProject) {
-        e.target.value = activeProject.id;
-      }
-      return;
-    }
-
-    await setActiveProjectId(e.target.value);
-    activeProject = await getActiveProject();
-
-    if (activeProject) {
-      // Bug 1 Fix: Load exact project location config
-      const cfg = activeProject.config || activeProject;
-      if (useLocationCheckbox) useLocationCheckbox.checked = Boolean(cfg.useLocation);
-      if (locationNameInput) locationNameInput.value = cfg.locationName || '';
-      if (latitudeInput) latitudeInput.value = cfg.latitude || '';
-      if (longitudeInput) longitudeInput.value = cfg.longitude || '';
-      if (accuracyInput) accuracyInput.value = cfg.accuracy !== undefined ? cfg.accuracy : 20;
-
-      if (activeProject.keywords && activeProject.keywords.length > 0) {
-        const lines = activeProject.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
-        keywordInput.value = lines.join('\n');
-        saveInputText(keywordInput.value);
-      }
-      renderLocationStatus(false, null, false);
-      renderResultsTable(currentJobState ? currentJobState.results : []);
-    }
-    showToast(`Switched to: ${activeProject?.config?.projectName || 'Project'}`);
-  });
-}
-
-// Open Full Dashboard button
-if (btnOpenDashboard) {
-  btnOpenDashboard.addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard/dashboard.html') });
-  });
-}
-
-// Clear Session Data button in popup
-if (btnPopupClearSession) {
-  btnPopupClearSession.addEventListener('click', async () => {
-    if (confirm('Clear all session projects, keywords, and results? Harmless settings will remain.')) {
-      await chrome.runtime.sendMessage({ action: 'CLEAR_SESSION_DATA' });
-      showToast('Session data cleared.');
-      keywordInput.value = '';
-      currentResults = [];
-      resultsTableBody.replaceChildren();
-      const tr = document.createElement('tr');
-      tr.className = 'empty-row';
-      const td = document.createElement('td');
-      td.colSpan = 7;
-      td.className = 'text-center';
-      td.textContent = 'No ranking results yet. Paste keywords and click START.';
-      tr.appendChild(td);
-      resultsTableBody.appendChild(tr);
-      resultsCount.textContent = '0 checked';
-      await initialize();
-    }
-  });
-}
-
-// Copy Positions Only handler (Bug 4 Fix: checks project ID match)
-if (btnCopyPositionsOnly) {
-  btnCopyPositionsOnly.addEventListener('click', () => {
-    if (currentJobState && currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
-      showToast('Action disabled: results belong to a different project.');
-      return;
-    }
-    if (!currentResults || currentResults.length === 0) {
-      showToast('No results to copy.');
-      return;
-    }
-    const tsvData = exportToCurrentPositionsOnly(currentResults);
-    copyToClipboard(tsvData);
-    showToast(`Copied ${currentResults.length} positions to clipboard!`);
-  });
-}
-
-// Auto-save input text on change
-keywordInput.addEventListener('input', () => {
-  saveInputText(keywordInput.value);
-  validateInput();
-});
-
-// START button handler
-btnStart.addEventListener('click', async () => {
-  const parsed = validateInput();
-
-  if (parsed.errors.length > 0) {
-    showToast('Please fix format errors before starting.');
-    return;
-  }
-
-  if (parsed.valid.length === 0) {
-    showToast('Please paste at least one keyword row.');
-    return;
-  }
-
-  // If location simulation is enabled, validate coordinates before starting
-  if (useLocationCheckbox && useLocationCheckbox.checked) {
-    const locValidation = validateCoordinates(latitudeInput.value, longitudeInput.value, accuracyInput.value);
-    if (!locValidation.valid) {
-      showLocationMessage(locValidation.error, false);
-      showToast('Invalid location coordinates. Please fix before starting.');
-      return;
-    }
-  }
-  showLocationMessage('', false);
-
-  const settings = {
-    googleDomain: googleDomainSelect.value,
-    maxPosition: parseInt(maxPositionSelect ? maxPositionSelect.value : 50, 10) || 50,
-    delaySeconds: Math.max(5, parseInt(delaySecondsInput.value, 10) || 8),
-    debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false,
-    useLocation: useLocationCheckbox ? useLocationCheckbox.checked : false,
-    latitude: latitudeInput ? latitudeInput.value.trim() : '',
-    longitude: longitudeInput ? longitudeInput.value.trim() : '',
-    accuracy: accuracyInput ? (parseInt(accuracyInput.value, 10) || 20) : 20,
-    locationName: locationNameInput ? locationNameInput.value.trim() : '',
-    activeProjectId: activeProject ? activeProject.id : null
-  };
-
-  // Auto-save location into active project
-  if (activeProject) {
-    await updateProject(activeProject.id, {
-      useLocation: settings.useLocation,
-      locationName: settings.locationName,
-      latitude: settings.latitude,
-      longitude: settings.longitude,
-      accuracy: settings.accuracy
+/**
+ * Attaches all event listeners safely
+ */
+function attachEventListeners() {
+  // 1. Textarea input auto-save
+  if (keywordInput) {
+    keywordInput.addEventListener('input', () => {
+      saveInputText(keywordInput.value).catch(() => {});
+      validateInput();
     });
   }
 
-  chrome.runtime.sendMessage({
-    action: 'START_JOB',
-    queue: parsed.valid,
-    settings: settings,
-    projectId: activeProject ? activeProject.id : null
-  }, (res) => {
-    if (res && res.state) {
-      currentJobState = res.state;
-      renderStatus(res.state.status);
-      renderResultsTable(res.state.results);
-      renderProgress(res.state.currentIndex, parsed.valid.length);
-      if (res.state.locationApplied) {
-        renderLocationStatus(true, res.state.locationDetails, false);
+  // 2. START button handler
+  bindButton('btnStart', async () => {
+    if (debugModeCheckbox && debugModeCheckbox.checked) {
+      console.log('[Popup] START clicked');
+    }
+    showPopupError('');
+
+    const parsed = validateInput();
+
+    if (parsed.errors.length > 0) {
+      showToast('Please fix format errors before starting.');
+      showPopupError('Please fix keyword format errors before starting.');
+      return;
+    }
+
+    if (parsed.valid.length === 0) {
+      showToast('Please paste at least one keyword row.');
+      showPopupError('Keyword list is empty. Paste keywords before starting.');
+      return;
+    }
+
+    // If location simulation is enabled, validate coordinates before starting
+    if (useLocationCheckbox && useLocationCheckbox.checked) {
+      const locValidation = validateCoordinates(latitudeInput?.value, longitudeInput?.value, accuracyInput?.value);
+      if (!locValidation.valid) {
+        showLocationMessage(locValidation.error, false);
+        showToast('Invalid location coordinates. Please fix before starting.');
+        showPopupError(`Invalid location coordinates: ${locValidation.error}`);
+        return;
       }
-    } else if (res && !res.success && res.error) {
-      showLocationMessage(res.error, false);
-      showToast(res.error);
     }
-  });
-});
-
-// PAUSE button handler
-btnPause.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'PAUSE_JOB' }, (res) => {
-    if (res && res.state) {
-      currentJobState = res.state;
-      renderStatus(res.state.status);
-    }
-  });
-});
-
-// RESUME button handler
-btnResume.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'RESUME_JOB' }, (res) => {
-    if (res && res.state) {
-      currentJobState = res.state;
-      renderStatus(res.state.status);
-      showToast('Resuming rank check...');
-    } else if (res && !res.success) {
-      showToast(res.message || 'Cannot resume.');
-    }
-  });
-});
-
-// STOP button handler
-btnStop.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'STOP_JOB' }, (res) => {
-    if (res && res.state) {
-      currentJobState = res.state;
-      renderStatus(res.state.status);
-      showToast('Rank checking stopped.');
-    }
-  });
-});
-
-// CLEAR button handler
-btnClear.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'CLEAR_JOB' }, (res) => {
-    if (res && res.state) {
-      currentJobState = res.state;
-      renderStatus(res.state.status);
-      renderResultsTable([]);
-      renderProgress(0, 0);
-      showToast('Results cleared.');
-    }
-  });
-});
-
-// Settings auto-save
-function saveCurrentSettings() {
-  const settings = {
-    googleDomain: googleDomainSelect.value,
-    maxPosition: parseInt(maxPositionSelect ? maxPositionSelect.value : 50, 10) || 50,
-    delaySeconds: Math.max(5, parseInt(delaySecondsInput.value, 10) || 8),
-    debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false
-  };
-  chrome.runtime.sendMessage({
-    action: 'SAVE_SETTINGS',
-    settings: settings
-  });
-}
-
-googleDomainSelect.addEventListener('change', saveCurrentSettings);
-if (maxPositionSelect) maxPositionSelect.addEventListener('change', saveCurrentSettings);
-delaySecondsInput.addEventListener('change', () => {
-  const val = Math.max(5, parseInt(delaySecondsInput.value, 10) || 8);
-  delaySecondsInput.value = val;
-  saveCurrentSettings();
-});
-
-if (debugModeCheckbox) {
-  debugModeCheckbox.addEventListener('change', (e) => {
-    saveCurrentSettings();
-    if (e.target.checked) {
-      showToast('Debug logging may display current session SEO data in DevTools.');
-    }
-  });
-}
-
-// Location inputs event listeners
-if (useLocationCheckbox) {
-  useLocationCheckbox.addEventListener('change', async (e) => {
-    renderLocationStatus(false, null, false);
     showLocationMessage('', false);
+
+    const settings = {
+      googleDomain: googleDomainSelect?.value || 'google.com',
+      maxPosition: parseInt(maxPositionSelect ? maxPositionSelect.value : 50, 10) || 50,
+      delaySeconds: Math.max(5, parseInt(delaySecondsInput?.value, 10) || 8),
+      debugMode: debugModeCheckbox ? debugModeCheckbox.checked : false,
+      useLocation: useLocationCheckbox ? useLocationCheckbox.checked : false,
+      latitude: latitudeInput ? latitudeInput.value.trim() : '',
+      longitude: longitudeInput ? longitudeInput.value.trim() : '',
+      accuracy: accuracyInput ? (parseInt(accuracyInput.value, 10) || 20) : 20,
+      locationName: locationNameInput ? locationNameInput.value.trim() : '',
+      activeProjectId: activeProject ? activeProject.id : null
+    };
+
+    // Auto-save location into active project
     if (activeProject) {
-      await updateProject(activeProject.id, { useLocation: e.target.checked });
-      activeProject.config.useLocation = e.target.checked;
+      await updateProject(activeProject.id, {
+        useLocation: settings.useLocation,
+        locationName: settings.locationName,
+        latitude: settings.latitude,
+        longitude: settings.longitude,
+        accuracy: settings.accuracy
+      });
+    }
+
+    try {
+      chrome.runtime.sendMessage({
+        action: 'START_JOB',
+        queue: parsed.valid,
+        settings: settings,
+        projectId: activeProject ? activeProject.id : null
+      }, (res) => {
+        if (chrome.runtime.lastError) {
+          const errMsg = chrome.runtime.lastError.message || 'Background service worker unavailable.';
+          console.error('[Popup] START_JOB error:', errMsg);
+          showPopupError(`Failed to start job: ${errMsg}`);
+          showToast(`Error: ${errMsg}`);
+          return;
+        }
+        if (res && res.state) {
+          currentJobState = res.state;
+          renderStatus(res.state.status);
+          renderResultsTable(res.state.results);
+          renderProgress(res.state.currentIndex, parsed.valid.length);
+          if (res.state.locationApplied) {
+            renderLocationStatus(true, res.state.locationDetails, false);
+          }
+        } else if (res && !res.success && res.error) {
+          showLocationMessage(res.error, false);
+          showPopupError(res.error);
+          showToast(res.error);
+        }
+      });
+    } catch (err) {
+      console.error('[Popup] START_JOB exception:', err);
+      showPopupError(`Exception starting job: ${err.message}`);
+      showToast(`Error: ${err.message}`);
     }
   });
-}
 
-// Location Actions
-if (btnApplyLocation) {
-  btnApplyLocation.addEventListener('click', async () => {
-    const lat = latitudeInput.value.trim();
-    const lon = longitudeInput.value.trim();
-    const acc = accuracyInput.value.trim() || '20';
-    const locName = locationNameInput.value.trim();
+  // 3. PAUSE button handler
+  bindButton('btnPause', () => {
+    if (debugModeCheckbox && debugModeCheckbox.checked) {
+      console.log('[Popup] PAUSE clicked');
+    }
+    showPopupError('');
+    chrome.runtime.sendMessage({ action: 'PAUSE_JOB' }, (res) => {
+      if (chrome.runtime.lastError) {
+        showPopupError(`Pause failed: ${chrome.runtime.lastError.message}`);
+        return;
+      }
+      if (res && res.state) {
+        currentJobState = res.state;
+        renderStatus(res.state.status);
+      }
+    });
+  });
+
+  // 4. RESUME button handler
+  bindButton('btnResume', () => {
+    if (debugModeCheckbox && debugModeCheckbox.checked) {
+      console.log('[Popup] RESUME clicked');
+    }
+    showPopupError('');
+    chrome.runtime.sendMessage({ action: 'RESUME_JOB' }, (res) => {
+      if (chrome.runtime.lastError) {
+        showPopupError(`Resume failed: ${chrome.runtime.lastError.message}`);
+        return;
+      }
+      if (res && res.state) {
+        currentJobState = res.state;
+        renderStatus(res.state.status);
+        showToast('Resuming rank check...');
+      } else if (res && !res.success) {
+        showToast(res.message || 'Cannot resume.');
+        showPopupError(res.message || 'Cannot resume.');
+      }
+    });
+  });
+
+  // 5. STOP button handler
+  bindButton('btnStop', () => {
+    if (debugModeCheckbox && debugModeCheckbox.checked) {
+      console.log('[Popup] STOP clicked');
+    }
+    showPopupError('');
+    chrome.runtime.sendMessage({ action: 'STOP_JOB' }, (res) => {
+      if (chrome.runtime.lastError) {
+        showPopupError(`Stop failed: ${chrome.runtime.lastError.message}`);
+        return;
+      }
+      if (res && res.state) {
+        currentJobState = res.state;
+        renderStatus(res.state.status);
+        showToast('Rank checking stopped.');
+      }
+    });
+  });
+
+  // 6. CLEAR button handler — clears immediately and independently
+  bindButton('btnClear', () => {
+    if (debugModeCheckbox && debugModeCheckbox.checked) {
+      console.log('[Popup] CLEAR clicked');
+    }
+    showPopupError('');
+
+    // Clear textarea and validation box immediately
+    if (keywordInput) {
+      keywordInput.value = '';
+      validateInput();
+    }
+    saveInputText('').catch(() => {});
+
+    // Clear table and progress immediately
+    currentResults = [];
+    renderResultsTable([]);
+    renderProgress(0, 0);
+    showToast('Cleared input and results.');
+
+    // Notify background
+    try {
+      chrome.runtime.sendMessage({ action: 'CLEAR_JOB' }, (res) => {
+        if (chrome.runtime.lastError) return;
+        if (res && res.state) {
+          currentJobState = res.state;
+          renderStatus(res.state.status);
+        }
+      });
+    } catch (_) {}
+  });
+
+  // 7. Settings auto-save triggers
+  if (googleDomainSelect) googleDomainSelect.addEventListener('change', saveCurrentSettings);
+  if (maxPositionSelect) maxPositionSelect.addEventListener('change', saveCurrentSettings);
+  if (delaySecondsInput) {
+    delaySecondsInput.addEventListener('change', () => {
+      const val = Math.max(5, parseInt(delaySecondsInput.value, 10) || 8);
+      delaySecondsInput.value = val;
+      saveCurrentSettings();
+    });
+  }
+  if (debugModeCheckbox) {
+    debugModeCheckbox.addEventListener('change', (e) => {
+      saveCurrentSettings();
+      if (e.target.checked) {
+        showToast('Debug logging may display current session SEO data in DevTools.');
+      }
+    });
+  }
+
+  // 8. Location configuration toggles
+  if (useLocationCheckbox) {
+    useLocationCheckbox.addEventListener('change', async (e) => {
+      renderLocationStatus(false, null, false);
+      showLocationMessage('', false);
+      if (activeProject) {
+        await updateProject(activeProject.id, { useLocation: e.target.checked });
+        activeProject.config.useLocation = e.target.checked;
+      }
+    });
+  }
+
+  // 9. Location Actions
+  bindButton('btnApplyLocation', async () => {
+    const lat = latitudeInput ? latitudeInput.value.trim() : '';
+    const lon = longitudeInput ? longitudeInput.value.trim() : '';
+    const acc = accuracyInput ? (accuracyInput.value.trim() || '20') : '20';
+    const locName = locationNameInput ? locationNameInput.value.trim() : '';
 
     const validation = validateCoordinates(lat, lon, acc);
     if (!validation.valid) {
@@ -828,6 +896,10 @@ if (btnApplyLocation) {
         locationName: locName
       }
     }, (resp) => {
+      if (chrome.runtime.lastError) {
+        showLocationMessage(chrome.runtime.lastError.message, false);
+        return;
+      }
       if (resp && resp.success) {
         showLocationMessage(resp.message || 'Location configured successfully.', true);
         renderLocationStatus(true, validation, false, true);
@@ -837,13 +909,11 @@ if (btnApplyLocation) {
       }
     });
   });
-}
 
-if (btnTestLocation) {
-  btnTestLocation.addEventListener('click', () => {
-    const lat = latitudeInput.value.trim();
-    const lon = longitudeInput.value.trim();
-    const acc = accuracyInput.value.trim() || '20';
+  bindButton('btnTestLocation', () => {
+    const lat = latitudeInput ? latitudeInput.value.trim() : '';
+    const lon = longitudeInput ? longitudeInput.value.trim() : '';
+    const acc = accuracyInput ? (accuracyInput.value.trim() || '20') : '20';
     const validation = validateCoordinates(lat, lon, acc);
     if (!validation.valid) {
       showLocationMessage(validation.error, false);
@@ -859,6 +929,10 @@ if (btnTestLocation) {
         accuracy: validation.accuracy
       }
     }, (resp) => {
+      if (chrome.runtime.lastError) {
+        showLocationMessage(chrome.runtime.lastError.message, false);
+        return;
+      }
       if (resp && resp.success) {
         showLocationMessage(resp.message, resp.verified);
       } else {
@@ -866,15 +940,13 @@ if (btnTestLocation) {
       }
     });
   });
-}
 
-if (btnResetLocation) {
-  btnResetLocation.addEventListener('click', async () => {
+  bindButton('btnResetLocation', async () => {
     chrome.runtime.sendMessage({ action: 'RESET_LOCATION' }, async () => {
-      latitudeInput.value = '';
-      longitudeInput.value = '';
-      locationNameInput.value = '';
-      useLocationCheckbox.checked = false;
+      if (latitudeInput) latitudeInput.value = '';
+      if (longitudeInput) longitudeInput.value = '';
+      if (locationNameInput) locationNameInput.value = '';
+      if (useLocationCheckbox) useLocationCheckbox.checked = false;
 
       if (activeProject) {
         await updateProject(activeProject.id, {
@@ -893,50 +965,171 @@ if (btnResetLocation) {
       showLocationMessage('Location override reset.', true);
     });
   });
+
+  // 10. Copy Positions Only handler
+  bindButton('btnCopyPositionsOnly', async () => {
+    if (currentJobState && currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
+      showToast('Action disabled: results belong to a different project.');
+      return;
+    }
+    if (!currentResults || currentResults.length === 0) {
+      showToast('No results to copy.');
+      return;
+    }
+    const tsvData = exportToCurrentPositionsOnly(currentResults);
+    await copyToClipboard(tsvData);
+    showToast(`Copied ${currentResults.length} positions to clipboard!`);
+  });
+
+  // 11. Copy All Results handler
+  bindButton('btnCopy', async () => {
+    if (currentJobState && currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
+      showToast('Action disabled: results belong to a different project.');
+      return;
+    }
+    if (!currentResults || currentResults.length === 0) {
+      showToast('No results to copy.');
+      return;
+    }
+
+    const tsvData = exportToTsv(currentResults);
+    await copyToClipboard(tsvData);
+    showToast('Copied to clipboard! Ready to paste into Excel.');
+  });
+
+  // 12. Download CSV handler
+  bindButton('btnDownloadCsv', () => {
+    if (currentJobState && currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
+      showToast('Action disabled: results belong to a different project.');
+      return;
+    }
+    if (!currentResults || currentResults.length === 0) {
+      showToast('No results to download.');
+      return;
+    }
+
+    const csvData = exportToCsv(currentResults);
+    const projName = activeProject ? (activeProject.config?.projectName || activeProject.projectName) : 'rankings';
+    const filename = `${sanitizeProjectFilename(projName)}_rank_results_${getTodayDateStr()}.csv`;
+    downloadCsv(csvData, filename);
+    showToast('CSV downloaded.');
+  });
+
+  // 13. Open Full Dashboard button
+  bindButton('btnOpenDashboard', () => {
+    if (debugModeCheckbox && debugModeCheckbox.checked) {
+      console.log('[Popup] OPEN DASHBOARD clicked');
+    }
+    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard/dashboard.html') });
+  });
+
+  // 14. Clear Session Data button
+  bindButton('btnPopupClearSession', async () => {
+    if (confirm('Clear all session projects, keywords, and results? Harmless settings will remain.')) {
+      await chrome.runtime.sendMessage({ action: 'CLEAR_SESSION_DATA' });
+      showToast('Session data cleared.');
+      if (keywordInput) keywordInput.value = '';
+      currentResults = [];
+      renderResultsTable([]);
+      if (resultsCount) resultsCount.textContent = '0 checked';
+      await initializeState();
+    }
+  });
+
+  // 15. Project Switcher
+  if (popupProjectSelect) {
+    popupProjectSelect.addEventListener('change', async (e) => {
+      if (['RUNNING', 'PAUSED', 'BLOCKED'].includes(currentStatus)) {
+        showToast('Cannot switch project while a job is active, paused, or blocked!');
+        if (activeProject) {
+          e.target.value = activeProject.id;
+        }
+        return;
+      }
+
+      await setActiveProjectId(e.target.value);
+      activeProject = await getActiveProject();
+
+      if (activeProject) {
+        const cfg = activeProject.config || activeProject;
+        if (useLocationCheckbox) useLocationCheckbox.checked = Boolean(cfg.useLocation);
+        if (locationNameInput) locationNameInput.value = cfg.locationName || '';
+        if (latitudeInput) latitudeInput.value = cfg.latitude || '';
+        if (longitudeInput) longitudeInput.value = cfg.longitude || '';
+        if (accuracyInput) accuracyInput.value = cfg.accuracy !== undefined ? cfg.accuracy : 20;
+
+        if (activeProject.keywords && activeProject.keywords.length > 0 && keywordInput) {
+          const lines = activeProject.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
+          keywordInput.value = lines.join('\n');
+          saveInputText(keywordInput.value).catch(() => {});
+        }
+        renderLocationStatus(false, null, false);
+        renderResultsTable(currentJobState ? currentJobState.results : []);
+      }
+      showToast(`Switched to: ${activeProject?.config?.projectName || 'Project'}`);
+    });
+  }
 }
 
-// COPY RESULTS button handler (Bug 4 Fix: checks project match)
-btnCopy.addEventListener('click', async () => {
-  if (currentJobState && currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
-    showToast('Action disabled: results belong to a different project.');
-    return;
-  }
-  if (!currentResults || currentResults.length === 0) {
-    showToast('No results to copy.');
-    return;
-  }
+/**
+ * Resolves all DOM elements safely
+ */
+function initElements() {
+  statusBadge = getEl('statusBadge', true);
+  alertBanner = getEl('alertBanner');
+  alertMessage = getEl('alertMessage');
+  keywordInput = getEl('keywordInput', true);
+  validationBox = getEl('validationBox');
+  popupProjectSelect = getEl('popupProjectSelect');
+  btnOpenDashboard = getEl('btnOpenDashboard');
+  btnCopyPositionsOnly = getEl('btnCopyPositionsOnly');
+  btnPopupClearSession = getEl('btnPopupClearSession');
+  googleDomainSelect = getEl('googleDomain');
+  maxPositionSelect = getEl('maxPosition');
+  delaySecondsInput = getEl('delaySeconds');
+  debugModeCheckbox = getEl('debugMode');
+  useLocationCheckbox = getEl('useLocation');
+  locationStatusIndicator = getEl('locationStatusIndicator');
+  locationFieldsGrid = getEl('locationFieldsGrid');
+  locationNameInput = getEl('locationName');
+  accuracyInput = getEl('accuracy');
+  latitudeInput = getEl('latitude');
+  longitudeInput = getEl('longitude');
+  locationValidationMsg = getEl('locationValidationMsg');
+  btnApplyLocation = getEl('btnApplyLocation');
+  btnTestLocation = getEl('btnTestLocation');
+  btnResetLocation = getEl('btnResetLocation');
+  btnStart = getEl('btnStart', true);
+  btnPause = getEl('btnPause', true);
+  btnResume = getEl('btnResume', true);
+  btnStop = getEl('btnStop', true);
+  btnClear = getEl('btnClear', true);
+  progressSection = getEl('progressSection');
+  progressText = getEl('progressText');
+  progressPercent = getEl('progressPercent');
+  progressBar = getEl('progressBar');
+  resultsCount = getEl('resultsCount');
+  resultsTableBody = getEl('resultsTableBody', true);
+  btnCopy = getEl('btnCopy');
+  btnDownloadCsv = getEl('btnDownloadCsv');
+  toast = getEl('toast');
+}
 
-  const tsvData = exportToTsv(currentResults);
-  copyToClipboard(tsvData);
-  showToast('Copied to clipboard! Ready to paste into Excel.');
-});
-
-// DOWNLOAD CSV button handler (Bug 4 Fix: checks project match)
-btnDownloadCsv.addEventListener('click', () => {
-  if (currentJobState && currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
-    showToast('Action disabled: results belong to a different project.');
-    return;
+/**
+ * Main entry point
+ */
+async function initPopup() {
+  try {
+    initElements();
+    attachEventListeners();
+    await initializeState();
+  } catch (err) {
+    console.error('[Popup] Startup error:', err);
+    showPopupError(`Popup failed to initialize: ${err.message}`);
   }
-  if (!currentResults || currentResults.length === 0) {
-    showToast('No results to download.');
-    return;
-  }
+}
 
-  const csvData = exportToCsv(currentResults);
-  const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  const projName = activeProject ? (activeProject.config?.projectName || activeProject.projectName) : 'rankings';
-  a.download = `${projName}_rank_results_${getTodayDateStr()}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  showToast('CSV downloaded.');
-});
-
-// Listen for live broadcasts from background
+// Background runtime message listener
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.action === 'PROGRESS_UPDATE' && msg.state) {
     currentJobState = msg.state;
@@ -960,9 +1153,21 @@ chrome.runtime.onMessage.addListener((msg) => {
       renderLocationStatus(false, null, false, false, false);
     }
   } else if (msg.action === 'SESSION_CLEARED') {
-    initialize();
+    initializeState();
   }
 });
 
-// Run initialization on popup open
-initialize();
+// Run initialization when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    initPopup().catch((err) => {
+      console.error('[Popup] Unhandled initialization error:', err);
+      showPopupError(`Startup error: ${err.message}`);
+    });
+  });
+} else {
+  initPopup().catch((err) => {
+    console.error('[Popup] Unhandled initialization error:', err);
+    showPopupError(`Startup error: ${err.message}`);
+  });
+}
