@@ -19,6 +19,8 @@ import {
   sanitizeProjectFilename
 } from '../utils/exporter.js';
 
+import { parseInputRows } from '../utils/parser.js';
+
 import {
   getProjects,
   getActiveProject,
@@ -266,6 +268,7 @@ function renderKeywordsTextarea(keywords) {
     el.keywordsTextarea.value = '';
     el.keywordCountLabel.textContent = '0 keywords in project';
     el.keywordsCountBadge.textContent = '0';
+    renderKeywordsPreview();
     return;
   }
 
@@ -279,41 +282,162 @@ function renderKeywordsTextarea(keywords) {
   el.keywordsTextarea.value = lines.join('\n');
   el.keywordCountLabel.textContent = `${keywords.length} keywords in project`;
   el.keywordsCountBadge.textContent = String(keywords.length);
+  renderKeywordsPreview();
 }
 
 /**
- * Parses user input in keywords textarea.
- * Format: keyword [TAB] targetUrl [TAB] previousPosition
+ * Parses user input in keywords textarea using the authoritative smart parser.
+ * Format: keyword [TAB/comma/space] targetUrl [TAB/comma/space] previousPosition
  * @returns {Array<object>}
  */
 function parseKeywordsFromTextarea() {
   const text = el.keywordsTextarea.value || '';
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-  const rows = [];
+  const { valid } = parseInputRows(text);
+  return valid;
+}
 
-  lines.forEach((line, idx) => {
-    const parts = line.includes('\t') ? line.split('\t') : line.split(',');
-    const keyword = (parts[0] || '').trim();
-    const targetUrl = (parts[1] || '').trim();
-    const rawPrev = (parts[2] || '').trim();
+/**
+ * Renders live parsed preview for dashboard keyword queue tab.
+ */
+function renderKeywordsPreview() {
+  const previewBox = document.getElementById('keywords-preview-box');
+  if (!previewBox || !el.keywordsTextarea) return;
 
-    if (keyword && targetUrl) {
-      let prevPos = null;
-      if (rawPrev !== '' && rawPrev !== '—' && rawPrev !== '-' && rawPrev.toLowerCase() !== 'not found') {
-        const num = Number(rawPrev);
-        if (!isNaN(num) && num > 0) prevPos = num;
-      }
-      rows.push({
-        id: `kw_${idx}_${Date.now()}`,
-        originalIndex: idx,
-        keyword,
-        targetUrl,
-        previousPosition: prevPos
-      });
+  const text = el.keywordsTextarea.value || '';
+  if (!text.trim()) {
+    previewBox.style.display = 'none';
+    previewBox.replaceChildren();
+    if (el.keywordCountLabel) el.keywordCountLabel.textContent = '0 keywords detected';
+    return;
+  }
+
+  const { valid, errors } = parseInputRows(text);
+  if (el.keywordCountLabel) {
+    el.keywordCountLabel.textContent = `${valid.length} keyword(s) detected${errors.length > 0 ? ` (${errors.length} invalid)` : ''}`;
+  }
+
+  previewBox.style.display = 'block';
+  previewBox.replaceChildren();
+
+  // 1. Errors if any
+  if (errors.length > 0) {
+    const errCard = document.createElement('div');
+    errCard.style.background = 'rgba(239, 68, 68, 0.15)';
+    errCard.style.border = '1px solid #ef4444';
+    errCard.style.borderRadius = '6px';
+    errCard.style.padding = '8px 12px';
+    errCard.style.marginBottom = valid.length > 0 ? '10px' : '0';
+    errCard.style.color = '#fca5a5';
+    errCard.style.fontSize = '12px';
+
+    const errTitle = document.createElement('div');
+    errTitle.style.fontWeight = '700';
+    errTitle.style.marginBottom = '4px';
+    errTitle.textContent = `⚠️ Could not understand ${errors.length} row(s):`;
+    errCard.appendChild(errTitle);
+
+    const ul = document.createElement('ul');
+    ul.style.margin = '4px 0 0 16px';
+    ul.style.padding = '0';
+
+    errors.slice(0, 5).forEach(e => {
+      const li = document.createElement('li');
+      li.textContent = `Line ${e.line}: ${e.message}`;
+      ul.appendChild(li);
+    });
+
+    if (errors.length > 5) {
+      const liMore = document.createElement('li');
+      liMore.textContent = `...and ${errors.length - 5} more lines`;
+      ul.appendChild(liMore);
     }
-  });
+    errCard.appendChild(ul);
+    previewBox.appendChild(errCard);
+  }
 
-  return rows;
+  // 2. Valid rows preview table
+  if (valid.length > 0) {
+    const validCard = document.createElement('div');
+    validCard.style.background = 'rgba(34, 197, 94, 0.1)';
+    validCard.style.border = '1px solid #22c55e';
+    validCard.style.borderRadius = '6px';
+    validCard.style.padding = '10px 12px';
+    validCard.style.color = '#86efac';
+    validCard.style.fontSize = '12px';
+
+    const title = document.createElement('div');
+    title.style.fontWeight = '700';
+    title.style.marginBottom = '6px';
+    title.textContent = `✓ Parsed Preview: ${valid.length} Keyword(s) Ready to Check`;
+    validCard.appendChild(title);
+
+    const table = document.createElement('table');
+    table.style.width = '100%';
+    table.style.borderCollapse = 'collapse';
+    table.style.fontSize = '11px';
+
+    const thead = document.createElement('thead');
+    const trH = document.createElement('tr');
+    ['#', 'Keyword', 'Target URL', 'Previous Position'].forEach(hText => {
+      const th = document.createElement('th');
+      th.textContent = hText;
+      th.style.textAlign = 'left';
+      th.style.padding = '4px 8px';
+      th.style.borderBottom = '1px solid #15803d';
+      th.style.color = '#4ade80';
+      trH.appendChild(th);
+    });
+    thead.appendChild(trH);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    valid.slice(0, 8).forEach((r, idx) => {
+      const tr = document.createElement('tr');
+
+      const tdIdx = document.createElement('td');
+      tdIdx.textContent = String(idx + 1);
+      tdIdx.style.padding = '4px 8px';
+      tdIdx.style.color = '#94a3b8';
+      tr.appendChild(tdIdx);
+
+      const tdKw = document.createElement('td');
+      tdKw.textContent = r.keyword;
+      tdKw.style.padding = '4px 8px';
+      tdKw.style.color = '#ffffff';
+      tdKw.style.fontWeight = '600';
+      tr.appendChild(tdKw);
+
+      const tdUrl = document.createElement('td');
+      tdUrl.textContent = r.targetUrl;
+      tdUrl.style.padding = '4px 8px';
+      tdUrl.style.color = '#60a5fa';
+      tr.appendChild(tdUrl);
+
+      const tdPos = document.createElement('td');
+      tdPos.textContent = String(r.previousPosition || '-');
+      tdPos.style.padding = '4px 8px';
+      tdPos.style.color = '#e2e8f0';
+      tr.appendChild(tdPos);
+
+      tbody.appendChild(tr);
+    });
+
+    if (valid.length > 8) {
+      const trMore = document.createElement('tr');
+      const tdMore = document.createElement('td');
+      tdMore.colSpan = 4;
+      tdMore.style.padding = '4px 8px';
+      tdMore.style.fontStyle = 'italic';
+      tdMore.style.color = '#86efac';
+      tdMore.textContent = `...and ${valid.length - 8} more keywords`;
+      trMore.appendChild(tdMore);
+      tbody.appendChild(trMore);
+    }
+
+    table.appendChild(tbody);
+    validCard.appendChild(table);
+    previewBox.appendChild(validCard);
+  }
 }
 
 /**
@@ -1020,15 +1144,24 @@ function setupEventListeners() {
     }
   });
 
+  // Keywords Textarea Live Preview & Input
+  el.keywordsTextarea.addEventListener('input', () => {
+    renderKeywordsPreview();
+  });
+
   // Keywords Textarea & Batch Save
   el.btnSaveKeywords.addEventListener('click', async () => {
     if (!activeProject) return;
-    const rows = parseKeywordsFromTextarea();
-    await saveProjectKeywords(activeProject.id, rows);
-    activeProject.keywords = rows;
-    showToast(`Saved ${rows.length} keywords to session project.`, 'success');
-    el.keywordsCountBadge.textContent = String(rows.length);
-    el.keywordCountLabel.textContent = `${rows.length} keywords in project`;
+    const { valid, errors } = parseInputRows(el.keywordsTextarea.value || '');
+    if (errors.length > 0) {
+      showToast(`Warning: ${errors.length} row(s) could not be understood.`, 'warning');
+    }
+    await saveProjectKeywords(activeProject.id, valid);
+    activeProject.keywords = valid;
+    showToast(`Saved ${valid.length} keywords to session project.`, 'success');
+    el.keywordsCountBadge.textContent = String(valid.length);
+    el.keywordCountLabel.textContent = `${valid.length} keywords in project`;
+    renderKeywordsPreview();
   });
 
   el.btnLoadSample.addEventListener('click', () => {
@@ -1055,18 +1188,22 @@ function setupEventListeners() {
       'holistic dentist\thttps://example.com/holistic\t'
     ];
     el.keywordsTextarea.value = samples.join('\n');
-    el.keywordCountLabel.textContent = `${samples.length} sample keywords loaded`;
+    renderKeywordsPreview();
     showToast('Loaded 20 sample keyword rows.', 'info');
   });
 
   // Job Controls (Start, Pause, Resume, Stop, Clear)
   el.btnStart.addEventListener('click', async () => {
-    const rows = parseKeywordsFromTextarea();
-    if (rows.length === 0) {
-      showToast('Please enter at least 1 keyword row.', 'error');
+    const { valid, errors } = parseInputRows(el.keywordsTextarea.value || '');
+    if (errors.length > 0) {
+      showToast(`Warning: ${errors.length} invalid row(s) could not be parsed.`, 'warning');
+    }
+    if (valid.length === 0) {
+      showToast('Please enter at least 1 valid keyword row.', 'error');
       document.querySelector('[data-tab="tab-keywords"]')?.click();
       return;
     }
+    const rows = valid;
 
     if (activeProject) {
       await saveProjectKeywords(activeProject.id, rows);

@@ -473,7 +473,7 @@ function renderProgress(currentIndex, total) {
 }
 
 /**
- * Validates textarea content and displays error messages with safe DOM nodes
+ * Validates textarea content, isolates invalid rows, and renders a live parsed preview.
  */
 function validateInput() {
   if (!keywordInput) return { valid: [], errors: [] };
@@ -488,17 +488,24 @@ function validateInput() {
 
   const parsed = parseInputRows(text);
   if (validationBox) {
+    validationBox.classList.remove('hidden');
+    validationBox.replaceChildren();
+
+    // 1. Highlight invalid rows if any
     if (parsed.errors.length > 0) {
-      validationBox.classList.remove('hidden');
-      validationBox.replaceChildren();
+      const errDiv = document.createElement('div');
+      errDiv.className = 'validation-error-header';
+      errDiv.style.color = '#e11d48';
+      errDiv.style.marginBottom = parsed.valid.length > 0 ? '8px' : '0';
 
       const strong = document.createElement('strong');
-      strong.textContent = 'Format errors detected:';
-      validationBox.appendChild(strong);
+      strong.textContent = `⚠️ Could not understand ${parsed.errors.length} row(s):`;
+      errDiv.appendChild(strong);
 
       const ul = document.createElement('ul');
       ul.style.margin = '4px 0 0 16px';
       ul.style.padding = '0';
+      ul.style.color = '#be123c';
 
       parsed.errors.slice(0, 3).forEach(e => {
         const li = document.createElement('li');
@@ -508,13 +515,139 @@ function validateInput() {
 
       if (parsed.errors.length > 3) {
         const liMore = document.createElement('li');
-        liMore.textContent = `...and ${parsed.errors.length - 3} more errors`;
+        liMore.textContent = `...and ${parsed.errors.length - 3} more line(s)`;
         ul.appendChild(liMore);
       }
-      validationBox.appendChild(ul);
-    } else {
-      validationBox.classList.add('hidden');
-      validationBox.replaceChildren();
+      errDiv.appendChild(ul);
+      validationBox.appendChild(errDiv);
+    }
+
+    // 2. Render live preview for valid rows
+    if (parsed.valid.length > 0) {
+      const previewDiv = document.createElement('div');
+      previewDiv.className = 'parsed-preview-container';
+      previewDiv.style.padding = '6px 8px';
+      previewDiv.style.background = '#f0fdf4';
+      previewDiv.style.border = '1px solid #bbf7d0';
+      previewDiv.style.borderRadius = '4px';
+      previewDiv.style.color = '#15803d';
+
+      if (parsed.valid.length === 1) {
+        const r = parsed.valid[0];
+        const title = document.createElement('div');
+        title.style.fontWeight = '700';
+        title.style.marginBottom = '4px';
+        title.textContent = '✓ Parsed Preview (1 Keyword Ready):';
+        previewDiv.appendChild(title);
+
+        const dKw = document.createElement('div');
+        const strongKw = document.createElement('strong');
+        strongKw.textContent = 'Keyword: ';
+        const spanKw = document.createElement('span');
+        spanKw.style.color = '#0f172a';
+        spanKw.style.fontWeight = '600';
+        spanKw.textContent = r.keyword;
+        dKw.appendChild(strongKw);
+        dKw.appendChild(spanKw);
+        previewDiv.appendChild(dKw);
+
+        const dUrl = document.createElement('div');
+        const strongUrl = document.createElement('strong');
+        strongUrl.textContent = 'URL: ';
+        const spanUrl = document.createElement('span');
+        spanUrl.style.color = '#2563eb';
+        spanUrl.textContent = r.targetUrl;
+        dUrl.appendChild(strongUrl);
+        dUrl.appendChild(spanUrl);
+        previewDiv.appendChild(dUrl);
+
+        const dPos = document.createElement('div');
+        const strongPos = document.createElement('strong');
+        strongPos.textContent = 'Previous: ';
+        const spanPos = document.createElement('span');
+        spanPos.style.color = '#0f172a';
+        spanPos.textContent = String(r.previousPosition || '-');
+        dPos.appendChild(strongPos);
+        dPos.appendChild(spanPos);
+        previewDiv.appendChild(dPos);
+      } else {
+        const title = document.createElement('div');
+        title.style.fontWeight = '700';
+        title.style.marginBottom = '4px';
+        title.textContent = `✓ Parsed Preview (${parsed.valid.length} Keywords Ready):`;
+        previewDiv.appendChild(title);
+
+        const table = document.createElement('table');
+        table.style.width = '100%';
+        table.style.borderCollapse = 'collapse';
+        table.style.fontSize = '10px';
+        table.style.marginTop = '4px';
+
+        const thead = document.createElement('thead');
+        const trH = document.createElement('tr');
+        ['Keyword', 'Target URL', 'Prev'].forEach(hText => {
+          const th = document.createElement('th');
+          th.textContent = hText;
+          th.style.textAlign = 'left';
+          th.style.padding = '2px 4px';
+          th.style.borderBottom = '1px solid #86efac';
+          th.style.color = '#166534';
+          trH.appendChild(th);
+        });
+        thead.appendChild(trH);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        parsed.valid.slice(0, 5).forEach(r => {
+          const tr = document.createElement('tr');
+
+          const tdKw = document.createElement('td');
+          tdKw.textContent = r.keyword;
+          tdKw.style.padding = '2px 4px';
+          tdKw.style.color = '#0f172a';
+          tdKw.style.fontWeight = '600';
+          tdKw.style.maxWidth = '110px';
+          tdKw.style.overflow = 'hidden';
+          tdKw.style.textOverflow = 'ellipsis';
+          tdKw.style.whiteSpace = 'nowrap';
+          tr.appendChild(tdKw);
+
+          const tdUrl = document.createElement('td');
+          tdUrl.textContent = r.targetUrl;
+          tdUrl.style.padding = '2px 4px';
+          tdUrl.style.color = '#2563eb';
+          tdUrl.style.maxWidth = '130px';
+          tdUrl.style.overflow = 'hidden';
+          tdUrl.style.textOverflow = 'ellipsis';
+          tdUrl.style.whiteSpace = 'nowrap';
+          tr.appendChild(tdUrl);
+
+          const tdPos = document.createElement('td');
+          tdPos.textContent = String(r.previousPosition || '-');
+          tdPos.style.padding = '2px 4px';
+          tdPos.style.color = '#0f172a';
+          tr.appendChild(tdPos);
+
+          tbody.appendChild(tr);
+        });
+
+        if (parsed.valid.length > 5) {
+          const trMore = document.createElement('tr');
+          const tdMore = document.createElement('td');
+          tdMore.colSpan = 3;
+          tdMore.style.padding = '2px 4px';
+          tdMore.style.fontStyle = 'italic';
+          tdMore.style.color = '#15803d';
+          tdMore.textContent = `...and ${parsed.valid.length - 5} more keywords`;
+          trMore.appendChild(tdMore);
+          tbody.appendChild(trMore);
+        }
+
+        table.appendChild(tbody);
+        previewDiv.appendChild(table);
+      }
+
+      validationBox.appendChild(previewDiv);
     }
   }
 

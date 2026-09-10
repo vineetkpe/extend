@@ -285,7 +285,7 @@
           <div class="keywords-helper-header">
             <div class="helper-text">
               <h4>20–80 Keyword Batch Management</h4>
-              <p>Paste lines from Excel/Google Sheets. Format: <code>Keyword [TAB] Target URL [TAB] Previous Position (optional)</code></p>
+              <p>Paste rows directly from Excel — separators are detected automatically. Format: <code>Keyword [TAB/comma/space] Target URL [TAB/comma/space] Previous Position</code></p>
             </div>
             <div class="helper-actions">
               <button id="btn-load-sample" class="btn btn-secondary btn-sm">Load 20 Sample Rows</button>
@@ -293,12 +293,13 @@
             </div>
           </div>
           <div class="textarea-wrapper">
-            <textarea id="keywords-textarea" rows="18" placeholder="dentist near me&#9;https://example.com/services&#9;5&#10;emergency dentist nyc&#9;https://example.com/emergency&#9;12&#10;teeth whitening&#9;https://example.com/cosmetic&#9;"></textarea>
+            <textarea id="keywords-textarea" rows="18" placeholder="Paste from Excel or enter:&#10;prompt optimizer   getpromptoptimizer.com   89&#10;best local seo   example.com/seo   12&#10;emergency dentist   example.com/urgent   -"></textarea>
           </div>
           <div class="keywords-footer">
             <span id="keyword-count-label">0 keywords detected</span>
-            <span class="format-hint">Tab-separated or comma-separated supported. Preserves exact line ordering.</span>
+            <span class="format-hint">Paste rows directly from Excel — separators are detected automatically. Preserves exact line ordering.</span>
           </div>
+          <div id="keywords-preview-box" class="keywords-preview-box" style="margin-top: 12px; display: none;"></div>
         </div>
 
         <!-- TAB 3: Privacy & Session Architecture -->
