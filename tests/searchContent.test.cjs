@@ -7,14 +7,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const code = fs.readFileSync(path.join(__dirname, '../content/searchContent.js'), 'utf8');
 
-function makeHarness({ ready = true, blocked = false, results = [] } = {}) {
+function makeHarness({ ready = true, blocked = false, results = [], rootSelector = '#rso' } = {}) {
   let handler;
   const replies = [];
   const dom = {
     title: blocked ? 'Unusual traffic' : 'Search',
     body: { innerText: blocked ? 'unusual traffic from your computer network' : '' },
     querySelector(selector) {
-      if (ready && selector === '#rso') return {};
+      if (ready && selector === rootSelector) return {};
       return null;
     }
   };
@@ -58,4 +58,13 @@ test('valid nonempty extraction still succeeds', async () => {
   const response = await makeHarness({ results: [{url: 'https://example.org/', position: 1}] }).parse();
   assert.equal(response.status, 'SUCCESS');
   assert.equal(response.results.length, 1);
+});
+
+test('modern Google #center_col is accepted as a bounded SERP results container', async () => {
+  const response = await makeHarness({
+    rootSelector: '#center_col',
+    results: [{ url: 'https://organic.example/first', position: 1 }]
+  }).parse();
+  assert.equal(response.status, 'SUCCESS');
+  assert.equal(response.results[0].url, 'https://organic.example/first');
 });
