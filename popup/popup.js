@@ -82,6 +82,7 @@ let statusBadge = null;
 let alertBanner = null;
 let alertMessage = null;
 let keywordInput = null;
+let defaultTargetSiteInput = null;
 let validationBox = null;
 let popupProjectSelect = null;
 let btnOpenDashboard = null;
@@ -487,7 +488,9 @@ function validateInput() {
     return { valid: [], errors: [] };
   }
 
-  const parsed = parseInputRows(text);
+  const parsed = parseInputRows(text, {
+    defaultTargetUrl: defaultTargetSiteInput?.value || ''
+  });
   if (validationBox) {
     validationBox.classList.remove('hidden');
     validationBox.replaceChildren();
@@ -745,6 +748,7 @@ async function initializeState() {
     if (activeProject) {
       const cfg = activeProject.config || activeProject;
       await restoreLocationFields(activeProject);
+      if (defaultTargetSiteInput) defaultTargetSiteInput.value = cfg.domain || '';
 
       if (activeProject.keywords && activeProject.keywords.length > 0 && keywordInput && !keywordInput.value) {
         const lines = activeProject.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
@@ -806,6 +810,17 @@ async function initializeState() {
  * Attaches all event listeners safely
  */
 function attachEventListeners() {
+  // A default website enables pasted single-column keyword lists.
+  if (defaultTargetSiteInput) {
+    defaultTargetSiteInput.addEventListener('input', validateInput);
+    defaultTargetSiteInput.addEventListener('change', async () => {
+      if (!activeProject) return;
+      const domain = defaultTargetSiteInput.value.trim();
+      await updateProject(activeProject.id, { domain });
+      Object.assign(activeProject.config || activeProject, { domain });
+    });
+  }
+
   // 1. Textarea input auto-save
   if (keywordInput) {
     keywordInput.addEventListener('input', () => {
@@ -1230,6 +1245,7 @@ function attachEventListeners() {
       if (activeProject) {
         const cfg = activeProject.config || activeProject;
         await restoreLocationFields(activeProject);
+        if (defaultTargetSiteInput) defaultTargetSiteInput.value = cfg.domain || '';
 
         if (activeProject.keywords && activeProject.keywords.length > 0 && keywordInput) {
           const lines = activeProject.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
@@ -1252,6 +1268,7 @@ function initElements() {
   alertBanner = getEl('alertBanner');
   alertMessage = getEl('alertMessage');
   keywordInput = getEl('keywordInput', true);
+  defaultTargetSiteInput = getEl('defaultTargetSite');
   validationBox = getEl('validationBox');
   popupProjectSelect = getEl('popupProjectSelect');
   btnOpenDashboard = getEl('btnOpenDashboard');
