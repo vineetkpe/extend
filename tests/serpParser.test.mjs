@@ -149,3 +149,28 @@ test('debug mode exposes diagnostic counts and does not change extraction', () =
   assert.deepEqual(Array.from(a.results, row => row.url), Array.from(b.results, row => row.url));
   assert.equal(a.debugInfo.headingsFound, 12);
 });
+
+test('parser deduplication respects meaningful query key casing and value whitespace', () => {
+  const { parser } = parserFor('mixed-layout');
+  assert.notEqual(
+    parser.normalizeUrl('https://example.com/page?Page=1'),
+    parser.normalizeUrl('https://example.com/page?page=1')
+  );
+  assert.notEqual(
+    parser.normalizeUrl('https://example.com/page?q=%20Red%20'),
+    parser.normalizeUrl('https://example.com/page?q=Red')
+  );
+  assert.equal(
+    parser.normalizeUrl('https://example.com/page?utm_source=one&color=Red'),
+    parser.normalizeUrl('https://example.com/page?color=Red&utm_source=two')
+  );
+});
+
+test('parser deduplication retains non-default ports', () => {
+  const { parser } = parserFor('mixed-layout');
+  assert.equal(parser.normalizeUrl('https://example.com:8443/Service'), 'example.com:8443/Service');
+  assert.notEqual(
+    parser.normalizeUrl('https://example.com:8443/Service'),
+    parser.normalizeUrl('https://example.com/Service')
+  );
+});
