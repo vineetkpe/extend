@@ -12,6 +12,7 @@
  */
 
 import { parseInputRows } from '../utils/parser.js';
+import { getProjectInputDraft, saveProjectInputDraft, formatSavedKeywordRows } from '../utils/projectInputDraft.js';
 import {
   exportToTsv,
   exportToCsv,
@@ -21,8 +22,6 @@ import {
   sanitizeProjectFilename
 } from '../utils/exporter.js';
 import {
-  getInputText,
-  saveInputText,
   isSessionStorageAvailable,
   SESSION_STORAGE_UNAVAILABLE_ERROR
 } from '../utils/storage.js';
@@ -32,7 +31,8 @@ import {
   getProjects,
   getActiveProject,
   setActiveProjectId,
-  updateProject
+  updateProject,
+  saveProjectKeywords
 } from '../utils/projectManager.js';
 
 // Safe DOM element helper
@@ -751,22 +751,17 @@ async function initializeState() {
       await restoreLocationFields(activeProject);
       if (defaultTargetSiteInput) defaultTargetSiteInput.value = cfg.domain || '';
 
-      if (activeProject.keywords && activeProject.keywords.length > 0 && keywordInput && !keywordInput.value) {
-        const lines = activeProject.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
-        keywordInput.value = lines.join('\n');
+      if (keywordInput) {
+        const draft = await getProjectInputDraft(activeProject.id);
+        keywordInput.value = draft !== null ? draft : formatSavedKeywordRows(activeProject.keywords);
       }
     }
   } catch (err) {
     console.error('[Popup] Error loading project state:', err);
   }
 
-  // Load cached input text if empty
-  try {
-    const savedText = await getInputText();
-    if (savedText && keywordInput && !keywordInput.value) {
-      keywordInput.value = savedText;
-    }
-  } catch (_) {}
+  // Global keyword text is intentionally not restored; drafts are scoped
+  // to the active project to prevent cross-client input leakage.
 
   // Request current state and settings from background
   chrome.runtime.sendMessage({ action: 'GET_STATE' }, (response) => {
@@ -825,7 +820,9 @@ function attachEventListeners() {
   // 1. Textarea input auto-save
   if (keywordInput) {
     keywordInput.addEventListener('input', () => {
-      saveInputText(keywordInput.value).catch(() => {});
+      if (activeProject) {
+        saveProjectInputDraft(activeProject.id, keywordInput.value).catch(console.error);
+      }
       validateInput();
     });
   }
@@ -993,7 +990,7 @@ function attachEventListeners() {
       keywordInput.value = '';
       validateInput();
     }
-    saveInputText('').catch(() => {});
+    if (activeProject) saveProjectInputDraft(activeProject.id, '').catch(console.error);
 
     // Clear table and progress immediately
     currentResults = [];
@@ -1249,10 +1246,10 @@ function attachEventListeners() {
         await restoreLocationFields(activeProject);
         if (defaultTargetSiteInput) defaultTargetSiteInput.value = cfg.domain || '';
 
-        if (activeProject.keywords && activeProject.keywords.length > 0 && keywordInput) {
-          const lines = activeProject.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
-          keywordInput.value = lines.join('\n');
-          saveInputText(keywordInput.value).catch(() => {});
+        if (keywordInput) {
+          const draft = await getProjectInputDraft(activeProject.id);
+          keywordInput.value = draft !== null ? draft : formatSavedKeywordRows(activeProject.keywords);
+          validateInput();
         }
         renderLocationStatus(false, null, false);
         renderResultsTable(currentJobState ? currentJobState.results : []);
