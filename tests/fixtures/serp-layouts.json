@@ -1,0 +1,337 @@
+{
+  "mixed-layout": {
+    "tag": "body",
+    "children": [
+      {
+        "tag": "header",
+        "children": [
+          {
+            "tag": "a",
+            "href": "https://outside.example/nav",
+            "children": [
+              {
+                "tag": "h3",
+                "text": "Unrelated page heading"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "div",
+        "id": "rso",
+        "children": [
+          {
+            "tag": "div",
+            "class": "MjjYud",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://example.com/first",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "First organic"
+                  }
+                ]
+              },
+              {
+                "tag": "section",
+                "children": [
+                  {
+                    "tag": "a",
+                    "href": "https://example.com/second",
+                    "children": [
+                      {
+                        "tag": "h3",
+                        "text": "Second mixed-layout organic"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "g",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://example.com/third",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Third organic"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "id": "tads",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://advertiser.com",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Sponsored advertisement"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "related-question-pair",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://answer.com",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "People also ask"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "VkpGBb",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://local.com",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Local map pack"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "g-scrolling-carousel",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://video.com",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Video carousel"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "g",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://example.com/third?utm_source=google",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Duplicate tracking link"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "g",
+            "children": [
+              {
+                "tag": "a",
+                "href": "/url?q=https%3A%2F%2Fexample.net%2Flanding%3Fa%3D1",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Redirect wrapper result"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "g",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://www.youtube.com/watch?v=123",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Legitimate YouTube organic"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "g",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://www.google.com/search?q=wrong",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Google nav link"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "g",
+            "children": [
+              {
+                "tag": "div",
+                "class": "sitelinks",
+                "children": [
+                  {
+                    "tag": "a",
+                    "href": "https://example.com/sitelink",
+                    "children": [
+                      {
+                        "tag": "h3",
+                        "text": "Sitelink"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "footer",
+        "children": [
+          {
+            "tag": "a",
+            "href": "https://footer.example",
+            "children": [
+              {
+                "tag": "h3",
+                "text": "Footer link"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "search-root-fallback": {
+    "tag": "body",
+    "children": [
+      {
+        "tag": "div",
+        "id": "search",
+        "children": [
+          {
+            "tag": "div",
+            "class": "g",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://example.org/ok",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Fallback organic"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "no-serp-root": {
+    "tag": "body",
+    "children": [
+      {
+        "tag": "header",
+        "children": [
+          {
+            "tag": "a",
+            "href": "https://example.org/false-positive",
+            "children": [
+              {
+                "tag": "h3",
+                "text": "Not a SERP result"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "case-distinct-results": {
+    "tag": "body",
+    "children": [
+      {
+        "tag": "div",
+        "id": "rso",
+        "children": [
+          {
+            "tag": "a",
+            "href": "https://example.com/Product",
+            "children": [
+              {
+                "tag": "h3",
+                "text": "Uppercase page"
+              }
+            ]
+          },
+          {
+            "tag": "a",
+            "href": "https://example.com/product",
+            "children": [
+              {
+                "tag": "h3",
+                "text": "Lowercase page"
+              }
+            ]
+          },
+          {
+            "tag": "a",
+            "href": "https://example.com/a%2Fb",
+            "children": [
+              {
+                "tag": "h3",
+                "text": "Encoded slash"
+              }
+            ]
+          },
+          {
+            "tag": "a",
+            "href": "https://example.com/a/b",
+            "children": [
+              {
+                "tag": "h3",
+                "text": "Plain slash"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
