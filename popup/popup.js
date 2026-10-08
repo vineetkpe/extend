@@ -898,7 +898,12 @@ function attachEventListeners() {
           showToast(`Error: ${errMsg}`);
           return;
         }
-        if (res && res.state) {
+        if (res && res.success && res.state) {
+          if (activeProject) {
+            saveProjectKeywords(activeProject.id, parsed.valid).catch(error =>
+              console.error('[Popup] Failed to save accepted keywords:', error)
+            );
+          }
           currentJobState = res.state;
           renderStatus(res.state.status);
           renderResultsTable(res.state.results);
