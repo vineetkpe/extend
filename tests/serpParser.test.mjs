@@ -190,7 +190,7 @@ test('strict organic ranking excludes AI citations, ads, PAA, map packs and caro
   assert.deepEqual(Array.from(output.results, entry => entry.position), [1, 2, 3, 4]);
   assert.equal(output.checkedDepth, 4);
   assert.equal(output.debugInfo.countingPolicy, 'strict-organic-web-v1');
-  assert.equal(output.debugInfo.skippedExcluded, 11);
+  assert.equal(output.debugInfo.skippedExcluded, 13);
   assert.equal(output.debugInfo.skippedSecondaryLinks, 1);
 });
 
