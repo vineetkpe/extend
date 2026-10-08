@@ -20,7 +20,7 @@ import {
 } from '../utils/exporter.js';
 
 import { parseInputRows } from '../utils/parser.js';
-import { inspectRankingWorkbook, buildUpdatedRankingWorkbook } from '../utils/rankingWorkbook.js';
+import { listRankingWorkbookSheets, inspectRankingWorkbook, buildUpdatedRankingWorkbook } from '../utils/rankingWorkbook.js';
 
 import {
   getProjects,
@@ -52,6 +52,28 @@ let pendingConfirmCallback = null;
 // The original XLSX contains unrelated client information and possibly secrets.
 // It is held ONLY in this dashboard's memory, never in Chrome storage/GitHub.
 let importedWorkbook = null;
+let pendingWorkbookUpload = null; // bytes retained in memory for manual worksheet mapping
+
+function xlsxColumnNumber(raw) {
+  const text = String(raw || '').trim().toUpperCase();
+  if (!text) return undefined;
+  if (!/^[A-Z]{1,3}$/.test(text)) throw new Error('Column must be letters A–XFD.');
+  let value = 0;
+  for (const character of text) value = value * 26 + character.charCodeAt(0) - 64;
+  if (value > 16384) throw new Error('Column must be between A and XFD.');
+  return value;
+}
+function xlsxColumnLetters(number) {
+  let n = Number(number) || 0;
+  if (!n) return '';
+  let result = '';
+  while (n > 0) {
+    n--;
+    result = String.fromCharCode(65 + n % 26) + result;
+    n = Math.floor(n / 26);
+  }
+  return result;
+}
 
 function todayLocalDate() {
   const today = new Date();
@@ -70,6 +92,12 @@ function syncWorkbookDownloadButton() {
 }
 function resetWorkbookImport() {
   importedWorkbook = null;
+  pendingWorkbookUpload = null;
+  if (el.workbookSheet) el.workbookSheet.replaceChildren();
+  for (const field of [el.workbookHeaderRow, el.workbookKeywordCol, el.workbookUrlCol, el.workbookBaselineCol]) {
+    if (field) field.value = '';
+  }
+  if (el.btnApplyWorkbookMap) el.btnApplyWorkbookMap.disabled = true;
   if (el.workbookFile) el.workbookFile.value = '';
   if (el.workbookStatus) el.workbookStatus.textContent = 'No workbook loaded. Raw Excel data is never uploaded or persisted.';
   if (el.btnClearWorkbook) el.btnClearWorkbook.disabled = true;
@@ -146,6 +174,12 @@ const el = {
   workbookFile: document.getElementById('workbook-file'),
   workbookDate: document.getElementById('workbook-date'),
   workbookStatus: document.getElementById('workbook-import-status'),
+  workbookSheet: document.getElementById('workbook-sheet'),
+  workbookHeaderRow: document.getElementById('workbook-header-row'),
+  workbookKeywordCol: document.getElementById('workbook-keyword-col'),
+  workbookUrlCol: document.getElementById('workbook-url-col'),
+  workbookBaselineCol: document.getElementById('workbook-baseline-col'),
+  btnApplyWorkbookMap: document.getElementById('btn-apply-workbook-map'),
   btnClearWorkbook: document.getElementById('btn-clear-workbook'),
   keywordCountLabel: document.getElementById('keyword-count-label'),
   btnLoadSample: document.getElementById('btn-load-sample'),
@@ -1182,57 +1216,105 @@ function setupEventListeners() {
     }
   });
 
-  // Workbook mode: read only Keyword Ranking and safe location fields.
-  // The full .xlsx stays in this dashboard's memory, NOT in session/local storage.
+  // Workbook mode accepts any worksheet and supports explicit column mapping.
+  // The complete uploaded .xlsx is kept only in this dashboard's memory.
+  async function useWorkbookMapping(options = {}) {
+    if (!pendingWorkbookUpload) throw new Error('Select a workbook first.');
+    const { bytes, filename } = pendingWorkbookUpload;
+    const inspected = await inspectRankingWorkbook(bytes, options);
+    importedWorkbook = {
+      bytes, inspected, filename,
+      projectId: activeProject ? activeProject.id : null,
+      startedRunId: null
+    };
+    el.workbookSheet.value = inspected.sheetName;
+    el.workbookHeaderRow.value = String(inspected.header.headerRow);
+    el.workbookKeywordCol.value = xlsxColumnLetters(inspected.header.keywordColumn);
+    el.workbookUrlCol.value = xlsxColumnLetters(inspected.header.urlColumn);
+    el.workbookBaselineCol.value = xlsxColumnLetters(inspected.header.latestColumn);
+    renderKeywordsTextarea(inspected.rows);
+    el.keywordsTextarea.readOnly = true;
+    el.btnSaveKeywords.disabled = true;
+    el.btnLoadSample.disabled = true;
+    el.btnClearWorkbook.disabled = false;
+    if (inspected.location.hasCoordinates) {
+      el.useLocationToggle.checked = true;
+      el.locLat.value = inspected.location.latitude;
+      el.locLon.value = inspected.location.longitude;
+      el.locName.value = inspected.location.locationName;
+      el.locAcc.value = '20';
+    }
+    el.workbookStatus.textContent =
+      filename + ': ' + inspected.rows.length + ' website keywords imported from "' +
+      inspected.sheetName + '". Previous dated ranking: ' +
+      (inspected.latestDate || 'none (first tracking run)') + '. ' +
+      (inspected.location.hasCoordinates ? 'Optional location coordinates were loaded. ' :
+        'Enter optional coordinates manually if required. ') +
+      'Check rankings, then download an updated copy. Other worksheets remain unchanged.';
+    syncWorkbookDownloadButton();
+    showToast('Imported ' + inspected.rows.length + ' keywords for any website.', 'success');
+  }
+
   el.workbookFile.addEventListener('change', async event => {
     const file = event.target.files?.[0];
     if (!file) return;
     if (currentJobState && ['RUNNING', 'PAUSED', 'BLOCKED'].includes(currentJobState.status)) {
-      showToast('Stop or finish the existing rank check before importing another workbook.', 'error');
+      showToast('Finish or stop the current check before switching workbooks.', 'error');
       event.target.value = '';
       return;
     }
+    resetWorkbookImport();
     if (!/\.xlsx$/i.test(file.name)) {
-      showToast('Please select an .xlsx Excel workbook.', 'error');
-      event.target.value = '';
+      showToast('Choose a local .xlsx workbook.', 'error');
       return;
     }
     try {
-      if (file.size > 20 * 1024 * 1024) throw new Error('Workbook is too large (20 MB limit).');
+      if (file.size > 20 * 1024 * 1024) throw new Error('Workbook exceeds 20 MB.');
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const inspected = await inspectRankingWorkbook(bytes);
-      importedWorkbook = {
-        bytes, inspected,
-        projectId: activeProject ? activeProject.id : null,
-        filename: file.name,
-        startedRunId: null
-      };
-      renderKeywordsTextarea(inspected.rows);
-      el.keywordsTextarea.readOnly = true;
-      el.btnSaveKeywords.disabled = true;
-      el.btnLoadSample.disabled = true;
-      el.btnClearWorkbook.disabled = false;
-
-      // Prepopulate coordinates from the workbook. They apply to browser
-      // geolocation only; this does not guarantee a geolocated Google SERP.
-      if (inspected.location.hasCoordinates) {
-        el.useLocationToggle.checked = true;
-        el.locLat.value = inspected.location.latitude;
-        el.locLon.value = inspected.location.longitude;
-        el.locName.value = inspected.location.locationName;
-        el.locAcc.value = '20';
+      const sheets = await listRankingWorkbookSheets(bytes);
+      pendingWorkbookUpload = { bytes, filename: file.name };
+      el.workbookSheet.replaceChildren();
+      for (const name of sheets) {
+        const option = document.createElement('option');
+        option.textContent = name;
+        option.value = name;
+        el.workbookSheet.appendChild(option);
       }
-      el.workbookStatus.textContent =
-        file.name + ': ' + inspected.rows.length + ' organic keywords ready. ' +
-        'Latest previous ranking: ' + inspected.latestDate + '. ' +
-        (inspected.location.hasCoordinates ? 'Coordinates loaded from Client Information. ' : 'No valid coordinates detected. ') +
-        (inspected.hasGmbSheet ? 'GMB Ranking will be preserved but not rechecked. ' : '') +
-        'Click START RANK CHECK, then Download Updated XLSX after completion.';
-      syncWorkbookDownloadButton();
-      showToast('Excel workbook loaded: ' + inspected.rows.length + ' organic keywords.', 'success');
+      el.btnApplyWorkbookMap.disabled = false;
+      el.btnClearWorkbook.disabled = false;
+      try {
+        await useWorkbookMapping();
+      } catch (error) {
+        // Keep bytes available for manual worksheet/column mapping.
+        importedWorkbook = null;
+        el.workbookStatus.textContent = error.message +
+          ' — choose a worksheet, header row, keyword and URL column letters, then click Load with This Mapping.';
+        showToast('Choose worksheet and columns to import this workbook.', 'info');
+      }
     } catch (error) {
       resetWorkbookImport();
-      showToast('Could not import XLSX: ' + error.message, 'error');
+      showToast('Could not read workbook: ' + error.message, 'error');
+    }
+  });
+
+  el.btnApplyWorkbookMap.addEventListener('click', async () => {
+    if (!pendingWorkbookUpload) return;
+    if (currentJobState && ['RUNNING', 'PAUSED', 'BLOCKED'].includes(currentJobState.status)) {
+      showToast('Stop the active check before remapping an imported workbook.', 'error');
+      return;
+    }
+    try {
+      await useWorkbookMapping({
+        sheetName: el.workbookSheet.value,
+        headerRow: Number(el.workbookHeaderRow.value) || undefined,
+        keywordColumn: xlsxColumnNumber(el.workbookKeywordCol.value),
+        urlColumn: xlsxColumnNumber(el.workbookUrlCol.value),
+        baselineColumn: xlsxColumnNumber(el.workbookBaselineCol.value)
+      });
+    } catch (error) {
+      importedWorkbook = null;
+      el.workbookStatus.textContent = 'Mapping failed: ' + error.message;
+      showToast('Mapping failed: ' + error.message, 'error');
     }
   });
 
@@ -1274,7 +1356,7 @@ function setupEventListeners() {
   // Keywords Textarea & Batch Save
   el.btnSaveKeywords.addEventListener('click', async () => {
     if (!activeProject) return;
-    if (importedWorkbook) {
+    if (pendingWorkbookUpload) {
       showToast('Workbook mode uses the original row mapping. Clear the workbook to edit keywords.', 'error');
       return;
     }
@@ -1291,7 +1373,7 @@ function setupEventListeners() {
   });
 
   el.btnLoadSample.addEventListener('click', () => {
-    if (importedWorkbook) return;
+    if (pendingWorkbookUpload) return;
     const samples = [
       'dentist near me\thttps://example.com/services\t5',
       'emergency dentist\thttps://example.com/emergency\t12',
@@ -1321,6 +1403,10 @@ function setupEventListeners() {
 
   // Job Controls (Start, Pause, Resume, Stop, Clear)
   el.btnStart.addEventListener('click', async () => {
+    if (pendingWorkbookUpload && !importedWorkbook) {
+      showToast('Complete the keyword/URL column mapping before starting.', 'error');
+      return;
+    }
     const parsed = importedWorkbook
       ? { valid: importedWorkbook.inspected.rows, errors: [] }
       : parseInputRows(el.keywordsTextarea.value || '');
