@@ -32,6 +32,7 @@ import {
   DEFAULT_JOB_SETTINGS
 } from './utils/storage.js';
 import { getProjects, getActiveProject } from './utils/projectManager.js';
+import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
 let activeQueuePromise = null;
@@ -40,6 +41,14 @@ let activeRunId = null;
 // Debugger session management for Geolocation CDP Override
 let activeDebuggerTabId = null;
 let activeAppliedLocation = null; // { latitude, longitude, accuracy, tabId }
+
+// The worker's module scope is recreated after Chrome suspends/terminates it.
+// Reconcile persisted RUNNING state before processing any incoming events.
+// Never auto-resume: the in-flight SERP and debugger state are no longer trusted.
+const workerRecoveryPromise = reconcileWorkerRestart(getJobState, saveJobState);
+workerRecoveryPromise.catch(error => {
+  console.error('[LRC Recovery] Failed to reconcile interrupted job:', error);
+});
 
 /**
  * Generates a unique execution session identifier
@@ -264,6 +273,7 @@ chrome.debugger.onDetach.addListener(async (source, reason) => {
   }
 
   try {
+    await workerRecoveryPromise;
     const currentState = await getJobState();
     const isJobTab = Boolean(
       (currentState.searchTabId && currentState.searchTabId === tabId) ||
@@ -1715,6 +1725,7 @@ async function ensureQueueRunning(runId) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   (async () => {
     try {
+      await workerRecoveryPromise;
       if (request.action === 'GET_STATE') {
         const state = await getJobState();
         const preferences = await getPreferences();
@@ -2206,6 +2217,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // Clean up tab reference if user closes the search tab
 chrome.tabs.onRemoved.addListener(async (closedTabId) => {
   try {
+    await workerRecoveryPromise;
     const state = await getJobState();
     if (state.searchTabId === closedTabId) {
       await saveJobState({ searchTabId: null, locationApplied: false, locationTabId: null });
