@@ -526,7 +526,9 @@ function updateLocationStatusBadge(state, details = null, tabId = null) {
   if (state === LOCATION_STATES.ACTIVE || state === 'ACTIVE') {
     el.locationStatusBadge.classList.add('badge-active');
     el.locationStatusBadge.textContent = tabId ? `LOCATION: ACTIVE (Tab ${tabId})` : 'LOCATION: ACTIVE';
-    el.locationMsg.textContent = details ? `Simulating ${details.latitude}, ${details.longitude} (±${details.accuracy || 20}m)` : '';
+    el.locationMsg.textContent = details
+      ? `Browser device coordinates: ${details.latitude}, ${details.longitude} (±${details.accuracy || 20}m). Google may still show an IP-based location.`
+      : 'Browser location override is active only in the Google search tab.';
     el.locationMsg.style.color = 'var(--green-text)';
   } else if (state === LOCATION_STATES.CONFIGURED || state === 'CONFIGURED') {
     el.locationStatusBadge.classList.add('badge-configured');
@@ -1209,9 +1211,14 @@ function setupEventListeners() {
       });
 
       if (resp && resp.success) {
-        showToast(resp.message, resp.verified ? 'success' : 'info');
+        el.locationMsg.textContent = resp.message;
+        el.locationMsg.style.color = 'var(--green-text)';
+        showToast('Google tab opened. Device coordinates verified; IP location may differ.', 'success');
+        await syncBackgroundState();
       } else {
-        showToast(resp ? resp.error : 'Location test failed.', 'error');
+        el.locationMsg.textContent = resp?.error || 'Location test failed.';
+        el.locationMsg.style.color = 'var(--red-text)';
+        showToast(el.locationMsg.textContent, 'error');
       }
     } catch (err) {
       showToast(err.message, 'error');
