@@ -218,7 +218,7 @@ function assertSafeToInsert(sheet, firstColumn) {
   if (allElements(sheet, 'f').length || allElements(sheet, 'tablePart').length) {
     throw new Error('This workbook uses formulas/tables in Keyword Ranking; safe column insertion is not supported.');
   }
-  const sheetsWithReferences = ['autoFilter', 'conditionalFormatting', 'dataValidation', 'hyperlink'];
+  const sheetsWithReferences = ['conditionalFormatting', 'dataValidation', 'hyperlink'];
   if (sheetsWithReferences.some(tag => allElements(sheet, tag).length)) {
     throw new Error('Keyword Ranking contains advanced cell references; please export CSV or use a simpler workbook.');
   }
@@ -322,6 +322,16 @@ export async function buildUpdatedRankingWorkbook(bytes, inspected, results, asO
   }
   for (const dimension of allElements(sheet, 'dimension')) {
     dimension.setAttribute('ref', shiftReference(dimension.getAttribute('ref'), firstRankColumn));
+  }
+  // Preserve workbook filters and existing sort conditions when shifting
+  // historical ranking columns (e.g. a sort originally on G92:G97).
+  for (const filter of allElements(sheet, 'autoFilter')) {
+    const nodes = [filter, ...Array.from(filter.getElementsByTagName('*'))];
+    for (const node of nodes) {
+      if (node.hasAttribute('ref')) {
+        node.setAttribute('ref', shiftReference(node.getAttribute('ref'), firstRankColumn));
+      }
+    }
   }
 
   zip.replace(inspected.organicSheet, encoder.encode(new XMLSerializer().serializeToString(sheet)));
