@@ -5,13 +5,27 @@
  */
 
 /**
+ * Neutralize cells that spreadsheet applications could treat as formulas.
+ * Quoting CSV fields alone is not sufficient: Excel/Sheets may still evaluate
+ * quoted values beginning with =, +, -, or @ (including leading whitespace).
+ * Keep numeric values and the common lone "-" unranked marker intact.
+ */
+export function neutralizeSpreadsheetFormula(val) {
+  if (val === undefined || val === null) return '';
+  const str = String(val);
+  if (typeof val === 'number' || str.trim() === '-') return str;
+  return /^[\\s\\u0000-\\u001f\\uFEFF]*[=+\\-@]/u.test(str)
+    ? "'" + str : str;
+}
+
+/**
  * Escapes a field for CSV export according to RFC 4180.
  * @param {*} val 
  * @returns {string}
  */
 function escapeCsvField(val) {
   if (val === undefined || val === null) return '""';
-  const str = String(val);
+  const str = neutralizeSpreadsheetFormula(val);
   if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
     return `"${str.replace(/"/g, '""')}"`;
   }
@@ -26,10 +40,11 @@ function escapeCsvField(val) {
  */
 function cleanTsvField(val) {
   if (val === undefined || val === null) return '';
-  return String(val)
+  const cleaned = String(val)
     .replace(/[\r\n]+/g, ' ')
     .replace(/\t/g, ' ')
     .trim();
+  return neutralizeSpreadsheetFormula(cleaned);
 }
 
 /**
