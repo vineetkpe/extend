@@ -1241,7 +1241,7 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
             appliedLocation: null,
             lastError: deviceCheck.error
           });
-          return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
+          return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST', error: deviceCheck.error };
         }
       }
 
@@ -1586,7 +1586,7 @@ async function runQueueLoop(runId) {
     }
 
     // Check ranks across pagination using jobSettings
-    const { resultItem, interrupted, reason } = await checkKeywordRanks(item, tab.id, jobSettings, runId);
+    const { resultItem, interrupted, reason, error } = await checkKeywordRanks(item, tab.id, jobSettings, runId);
 
     // If interrupted, DO NOT mark keyword as ERROR and DO NOT advance currentIndex!
     if (interrupted) {
@@ -1620,7 +1620,7 @@ async function runQueueLoop(runId) {
       }
 
       if (reason === 'LOCATION_LOST') {
-        const errorMsg = 'Location override was lost. Rank checking has been blocked to prevent inaccurate results.';
+        const errorMsg = error || 'Location override was lost. Rank checking has been blocked to prevent inaccurate results.';
         await debugLog(`[LRC FAIL-CLOSED] ${errorMsg}`);
         const checkState = await getJobState();
         if (checkState.runId === runId && checkState.status !== 'STOPPED' && checkState.status !== 'PAUSED') {
