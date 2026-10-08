@@ -406,25 +406,84 @@ export async function promoteCurrentToPrevious(projectId, currentResults = []) {
   if (!projects[projectId]) return [];
 
   const existingKeywords = projects[projectId].keywords || [];
-  const resultMap = new Map();
-  for (const r of currentResults) {
-    if (r && r.keyword) {
-      resultMap.set(r.keyword.trim().toLowerCase(), r);
+
+  // A keyword can target multiple landing pages. Match both keyword and target
+  // URL to avoid copying one page's ranking into another page's baseline.
+  // Keep the target URL case-sensitive here (paths may be case-sensitive).
+  const identityFor = row => {
+    const keyword = typeof row?.keyword === 'string' ? row.keyword.trim().toLowerCase() : '';
+    const targetUrl = typeof row?.targetUrl === 'string' ? row.targetUrl.trim() : '';
+    return keyword && targetUrl ? JSON.stringify([keyword, targetUrl]) : null;
+  };
+
+  const resultsById = new Map();
+  const resultsByIdentity = new Map();
+  for (const result of currentResults) {
+    const identity = identityFor(result);
+    if (!identity) continue;
+    if (typeof result.id === 'string' && result.id) {
+      if (!resultsById.has(result.id)) resultsById.set(result.id, []);
+      resultsById.get(result.id).push(result);
     }
+    if (!resultsByIdentity.has(identity)) resultsByIdentity.set(identity, []);
+    resultsByIdentity.get(identity).push(result);
   }
 
-  const updatedKeywords = existingKeywords.map(kw => {
-    const res = resultMap.get(kw.keyword.trim().toLowerCase());
-    if (res && res.currentPosition !== undefined && res.currentPosition !== null) {
-      const prevPos = typeof res.currentPosition === 'number' ? res.currentPosition : null;
-      return {
-        ...kw,
-        previousPosition: prevPos,
-        lastCurrentPosition: null,
-        lastCheckedAt: new Date().toISOString()
-      };
+  const matchedResults = new Map();
+  const usedResults = new Set();
+
+  // Reserve exact row-ID matches first so fallback matching cannot consume
+  // a result belonging to another row with the same keyword + target URL.
+  existingKeywords.forEach((keywordRow, index) => {
+    const identity = identityFor(keywordRow);
+    if (!identity || typeof keywordRow.id !== 'string' || !keywordRow.id) return;
+    const candidates = resultsById.get(keywordRow.id) || [];
+    const matched = candidates.find(result => !usedResults.has(result) && identityFor(result) === identity);
+    if (matched) {
+      matchedResults.set(index, matched);
+      usedResults.add(matched);
     }
-    return kw;
+  });
+
+  // Support legacy rows or regenerated IDs without ever matching by keyword alone.
+  existingKeywords.forEach((keywordRow, index) => {
+    if (matchedResults.has(index)) return;
+    const identity = identityFor(keywordRow);
+    if (!identity) return;
+    const candidates = resultsByIdentity.get(identity) || [];
+    const matched = candidates.find(result => !usedResults.has(result));
+    if (matched) {
+      matchedResults.set(index, matched);
+      usedResults.add(matched);
+    }
+  });
+
+  const updatedKeywords = existingKeywords.map((kw, index) => {
+    const res = matchedResults.get(index);
+    if (!res) return kw;
+
+    // A technical error, interrupted check, or untouched row must NEVER
+    // erase a valid historical position. An explicitly verified Not Found
+    // result, however, can legitimately promote an unranked baseline.
+    if (res.status === 'ERROR' || res.matchStatus === 'ERROR' ||
+        res.currentPosition === 'Error' || res.status === 'NOT CHECKED' ||
+        res.matchStatus === 'NOT_CHECKED' || res.currentPosition === 'NOT CHECKED') {
+      return kw;
+    }
+    const ranked = typeof res.currentPosition === 'number' &&
+      Number.isInteger(res.currentPosition) && res.currentPosition > 0;
+    const verifiedNotFound = res.currentPosition === 'Not Found' &&
+      (res.status === 'TARGET PAGE NOT FOUND' ||
+       res.matchStatus === 'TARGET PAGE NOT FOUND' ||
+       res.matchStatus === 'OTHER DOMAIN PAGE FOUND');
+    if (!ranked && !verifiedNotFound) return kw;
+
+    return {
+      ...kw,
+      previousPosition: ranked ? res.currentPosition : '-',
+      lastCurrentPosition: null,
+      lastCheckedAt: res.checkedAt || new Date().toISOString()
+    };
   });
 
   projects[projectId].keywords = updatedKeywords;

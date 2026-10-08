@@ -5,11 +5,14 @@
  * Client SEO Data & Active Runtime:
  * - Persisted ONLY in chrome.storage.session (in-memory for current browser session).
  * - Disappears automatically when Chrome or browser session ends.
- * - Zero client data stored in chrome.storage.local.
+ * - No client names, domains, keywords, results, or ranking histories in local storage.
+ * - Exception: explicitly entered numeric latitude/longitude/accuracy are remembered
+ *   locally until Reset Location via utils/rememberedLocation.js, as requested.
  * - If chrome.storage.session is unavailable, fails closed (NO fallback to local storage).
  * 
  * Non-Client Settings:
- * - Stored in chrome.storage.local (whitelisted general tool preferences only).
+ * - General whitelisted tool preferences and separately remembered coordinates
+ *   reside in chrome.storage.local. Coordinates are not part of the preferences whitelist.
  */
 
 export const STORAGE_KEYS = {
@@ -83,7 +86,9 @@ export function getLocalStorage() {
 
 /**
  * Whitelist of allowed non-client preferences permitted in chrome.storage.local.
- * Client names, domains, keywords, URLs, coordinates, results, and history are strictly forbidden.
+ * Client names, domains, keywords, URLs, results, and history are forbidden.
+ * Numeric coordinates are stored separately with explicit user intent; NEVER add
+ * client location labels or per-project data to this general preferences whitelist.
  */
 export const ALLOWED_LOCAL_PREFS = [
   'googleDomain',

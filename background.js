@@ -32,14 +32,28 @@ import {
   DEFAULT_JOB_SETTINGS
 } from './utils/storage.js';
 import { getProjects, getActiveProject } from './utils/projectManager.js';
+import { mayStartNewJob, makeFailedRetryPlan } from './utils/jobRetry.js';
+import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/geolocationProof.js';
+import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
 let activeQueuePromise = null;
 let activeRunId = null;
+// Synchronous admission guard for concurrent START_JOB / RETRY_FAILED_JOB
+// requests received while their async storage operations are in flight.
+let jobAdmissionBusy = false;
 
 // Debugger session management for Geolocation CDP Override
 let activeDebuggerTabId = null;
 let activeAppliedLocation = null; // { latitude, longitude, accuracy, tabId }
+
+// The worker's module scope is recreated after Chrome suspends/terminates it.
+// Reconcile persisted RUNNING state before processing any incoming events.
+// Never auto-resume: the in-flight SERP and debugger state are no longer trusted.
+const workerRecoveryPromise = reconcileWorkerRestart(getJobState, saveJobState);
+workerRecoveryPromise.catch(error => {
+  console.error('[LRC Recovery] Failed to reconcile interrupted job:', error);
+});
 
 /**
  * Generates a unique execution session identifier
@@ -117,6 +131,35 @@ function sendDebuggerCommand(target, method, params = {}) {
       resolve(result);
     });
   });
+}
+
+/**
+ * Validate that this specific Google page actually reports the configured
+ * device coordinates. Setting the CDP override alone is insufficient proof.
+ * Does not claim Google used the coordinates in its search ranking algorithm.
+ */
+async function verifyPageDeviceLocation(tabId, settings) {
+  try {
+    const output = await sendDebuggerCommand({ tabId }, 'Runtime.evaluate', {
+      expression: DEVICE_LOCATION_EXPRESSION,
+      awaitPromise: true,
+      returnByValue: true
+    });
+    if (output?.exceptionDetails) {
+      return { valid: false, error: 'Page geolocation evaluation threw an exception.' };
+    }
+    const reported = output?.result?.value;
+    if (reported?.error) {
+      return { valid: false, error: 'Google page geolocation unavailable: ' + reported.error };
+    }
+    const verified = verifyCoordinatesReported(settings, reported);
+    if (!verified.valid) {
+      return { valid: false, error: 'Google page did not report the configured coordinates (' + verified.reason + ').' };
+    }
+    return { valid: true, reported };
+  } catch (error) {
+    return { valid: false, error: 'Unable to verify Google page geolocation: ' + error.message };
+  }
 }
 
 /**
@@ -264,6 +307,7 @@ chrome.debugger.onDetach.addListener(async (source, reason) => {
   }
 
   try {
+    await workerRecoveryPromise;
     const currentState = await getJobState();
     const isJobTab = Boolean(
       (currentState.searchTabId && currentState.searchTabId === tabId) ||
@@ -1120,6 +1164,27 @@ function broadcastMessage(msg) {
  * @param {string} runId
  * @returns {Promise<{ resultItem: object|null, interrupted: boolean, reason?: string }>}
  */
+/**
+ * Inconclusive navigation/parsing must not be recorded as a ranking loss.
+ */
+function createKeywordErrorResult(item, message) {
+  return {
+    id: item.id,
+    keyword: item.keyword,
+    targetUrl: item.targetUrl,
+    previousPosition: item.previousPosition,
+    currentPosition: 'Error',
+    displayPosition: 'Error',
+    change: '—',
+    matchStatus: 'ERROR',
+    status: 'ERROR',
+    checkedDepth: 0,
+    foundUrl: null,
+    error: message,
+    checkedAt: new Date().toISOString()
+  };
+}
+
 async function checkKeywordRanks(item, tabId, settings, runId) {
   const domain = settings.googleDomain || 'google.com';
   const maxDepth = Math.max(10, Math.min(100, Number(settings.maxPosition) || 50));
@@ -1189,6 +1254,20 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
           await debugLog(`[LRC FAIL-CLOSED] Location override lost during/after navigation: ${postNavLoc.reason}`);
           return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
         }
+        const deviceCheck = await verifyPageDeviceLocation(tabId, settings);
+        if (!deviceCheck.valid) {
+          await debugLog('[LRC FAIL-CLOSED] ' + deviceCheck.error);
+          // Make the next explicit resume reapply CDP instead of reusing a
+          // stale in-memory fingerprint from the failed verification.
+          activeAppliedLocation = null;
+          await saveJobState({
+            locationApplied: false,
+            locationState: LOCATION_STATES.FAILED,
+            appliedLocation: null,
+            lastError: deviceCheck.error
+          });
+          return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST', error: deviceCheck.error };
+        }
       }
 
       // Brief dynamic render wait (interruptible)
@@ -1239,8 +1318,17 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
         return { resultItem: null, interrupted: true, reason: 'BLOCKED' };
       }
 
-      if (response && response.status === 'SUCCESS') {
-        const pageResults = response.results || [];
+      if (!response || response.status !== 'SUCCESS' ||
+          !Array.isArray(response.results) || response.results.length === 0) {
+        const message = response?.message ||
+          (response?.status === 'SUCCESS'
+            ? 'Google returned no parseable organic results; ranking is inconclusive.'
+            : 'Google results could not be extracted reliably.');
+        return { resultItem: createKeywordErrorResult(item, message), interrupted: false };
+      }
+
+      if (response.status === 'SUCCESS') {
+        const pageResults = response.results;
         let newUniqueCount = 0;
 
         for (const res of pageResults) {
@@ -1326,8 +1414,6 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
             }
           }
         }
-      } else {
-        consecutiveEmptyPages++;
       }
     } catch (err) {
       if (settings && settings.useLocation) {
@@ -1346,40 +1432,11 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
         return { resultItem: null, interrupted: true, reason: errReason };
       }
       console.error(`[LRC] Error on startOffset=${offset} for "${item.keyword}":`, err);
-      consecutiveEmptyPages++;
-
-      if (consecutiveEmptyPages >= 2 && cumulativeResults.length === 0) {
-        if (settings && settings.useLocation) {
-          const techErrIntegrity = await verifyLocationIntegrity({
-            runId,
-            tabId,
-            jobSettings: settings
-          });
-          if (!techErrIntegrity.valid) {
-            return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
-          }
-        }
-
-        // Genuine technical error
-        return {
-          resultItem: {
-            id: item.id,
-            keyword: item.keyword,
-            targetUrl: item.targetUrl,
-            previousPosition: item.previousPosition,
-            currentPosition: 'Error',
-            displayPosition: 'Error',
-            change: '—',
-            matchStatus: 'ERROR',
-            status: 'ERROR',
-            checkedDepth: 0,
-            foundUrl: null,
-            error: err.message || 'Page navigation or extraction failed.',
-            checkedAt: new Date().toISOString()
-          },
-          interrupted: false
-        };
-      }
+      // A failed page invalidates an otherwise partial ranking scan.
+      return {
+        resultItem: createKeywordErrorResult(item, err.message || 'Page navigation or extraction failed.'),
+        interrupted: false
+      };
     }
   }
 
@@ -1532,7 +1589,7 @@ async function runQueueLoop(runId) {
     }
 
     // Check ranks across pagination using jobSettings
-    const { resultItem, interrupted, reason } = await checkKeywordRanks(item, tab.id, jobSettings, runId);
+    const { resultItem, interrupted, reason, error } = await checkKeywordRanks(item, tab.id, jobSettings, runId);
 
     // If interrupted, DO NOT mark keyword as ERROR and DO NOT advance currentIndex!
     if (interrupted) {
@@ -1566,7 +1623,7 @@ async function runQueueLoop(runId) {
       }
 
       if (reason === 'LOCATION_LOST') {
-        const errorMsg = 'Location override was lost. Rank checking has been blocked to prevent inaccurate results.';
+        const errorMsg = error || 'Location override was lost. Rank checking has been blocked to prevent inaccurate results.';
         await debugLog(`[LRC FAIL-CLOSED] ${errorMsg}`);
         const checkState = await getJobState();
         if (checkState.runId === runId && checkState.status !== 'STOPPED' && checkState.status !== 'PAUSED') {
@@ -1714,7 +1771,17 @@ async function ensureQueueRunning(runId) {
  */
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   (async () => {
+    let holdsAdmission = false;
     try {
+      await workerRecoveryPromise;
+      if (request.action === 'START_JOB' || request.action === 'RETRY_FAILED_JOB') {
+        if (jobAdmissionBusy) {
+          sendResponse({ success: false, message: 'A job is already starting. Please wait.' });
+          return;
+        }
+        jobAdmissionBusy = true;
+        holdsAdmission = true;
+      }
       if (request.action === 'GET_STATE') {
         const state = await getJobState();
         const preferences = await getPreferences();
@@ -1723,6 +1790,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       if (request.action === 'START_JOB') {
+        const currentState = await getJobState();
+        if (!mayStartNewJob(currentState)) {
+          sendResponse({ success: false, message: 'A job is already active. Resume or stop it before starting another.' });
+          return;
+        }
         if (!isSessionStorageAvailable()) {
           sendResponse({
             success: false,
@@ -1733,7 +1805,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
 
         const { queue, settings, projectId } = request;
-        if (!queue || queue.length === 0) {
+        if (!Array.isArray(queue) || queue.length === 0) {
           sendResponse({ success: false, message: 'Queue is empty.' });
           return;
         }
@@ -1864,7 +1936,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         // 7. Start queue using runtimeState.jobSettings
         sendResponse({ success: true, state });
-        ensureQueueRunning(runId);
+        ensureQueueRunning(runId).catch(err => console.error('[LRC] Queue start failed:', err));
         return;
       }
 
@@ -1876,39 +1948,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
-        if (!currentState.results || currentState.results.length === 0) {
-          sendResponse({ success: false, message: 'No results to retry.' });
+        const retry = makeFailedRetryPlan(currentState);
+        if (!retry.allowed) {
+          sendResponse({ success: false, message: retry.error });
           return;
         }
-
-        const failedItems = [];
-        const currentResults = [...currentState.results];
-
-        currentResults.forEach((res, idx) => {
-          if (res && (res.status === 'ERROR' || res.matchStatus === 'ERROR')) {
-            const origIdx = res.originalIndex !== undefined ? res.originalIndex : idx;
-            failedItems.push({
-              id: res.id || `kw_${origIdx}`,
-              originalIndex: origIdx,
-              keyword: res.keyword,
-              targetUrl: res.targetUrl,
-              previousPosition: res.previousPosition ?? null
-            });
-            currentResults[origIdx] = {
-              ...res,
-              status: 'NOT CHECKED',
-              currentPosition: 'NOT CHECKED',
-              displayPosition: 'NOT CHECKED',
-              change: '—',
-              error: null
-            };
-          }
-        });
-
-        if (failedItems.length === 0) {
-          sendResponse({ success: false, message: 'No failed keywords found to retry.' });
-          return;
-        }
+        const failedItems = retry.queue;
+        const currentResults = retry.results;
 
         const runId = generateRunId();
         const state = await saveJobState({
@@ -1926,7 +1972,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
 
         sendResponse({ success: true, state, retryingCount: failedItems.length });
-        ensureQueueRunning(runId);
+        ensureQueueRunning(runId).catch(err => console.error('[LRC] Retry queue failed:', err));
         return;
       }
 
@@ -1999,7 +2045,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       if (request.action === 'SAVE_SETTINGS') {
         if (request.settings) {
-          await saveSettings(request.settings);
+          await savePreferences(request.settings);
         }
         sendResponse({ success: true });
         return;
@@ -2120,31 +2166,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           // Attach debugger and set override
           await applyGeolocationOverride(testTab.id, validation, domain);
 
-          // Evaluate navigator.geolocation via CDP Runtime.evaluate
-          const evalResult = await sendDebuggerCommand({ tabId: testTab.id }, 'Runtime.evaluate', {
-            expression: `new Promise((resolve) => {
-              if (!navigator.geolocation) {
-                return resolve({ supported: false, error: 'navigator.geolocation not available in this tab.' });
-              }
-              navigator.geolocation.getCurrentPosition(
-                (pos) => resolve({
-                  supported: true,
-                  lat: pos.coords.latitude,
-                  lon: pos.coords.longitude,
-                  accuracy: pos.coords.accuracy
-                }),
-                (err) => resolve({
-                  supported: true,
-                  error: err.message || 'Position unavailable'
-                }),
-                { timeout: 7000, maximumAge: 0 }
-              );
-            })`,
-            awaitPromise: true,
-            returnByValue: true
-          });
-
-          const resValue = evalResult && evalResult.result ? evalResult.result.value : null;
+          // Confirm the page's Geolocation API returns the simulated coordinates.
+          const deviceCheck = await verifyPageDeviceLocation(testTab.id, validation);
+          const resValue = deviceCheck.valid
+            ? { lat: deviceCheck.reported.latitude, lon: deviceCheck.reported.longitude,
+                accuracy: deviceCheck.reported.accuracy }
+            : { error: deviceCheck.error };
 
           if (createdTempTab) {
             try {
@@ -2163,7 +2190,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 latitude: resValue.lat,
                 longitude: resValue.lon,
                 accuracy: resValue.accuracy,
-                message: `Location Override Verified: ${resValue.lat}, ${resValue.lon}`
+                message: `Browser device location verified: ${resValue.lat}, ${resValue.lon}. Google ranking geography is not guaranteed (IP and account context may differ).`
               });
               return;
             } else {
@@ -2197,6 +2224,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     } catch (err) {
       console.error('[LRC] Message handling error:', err);
       sendResponse({ success: false, error: err.message });
+    } finally {
+      if (holdsAdmission) jobAdmissionBusy = false;
     }
   })();
 
@@ -2206,6 +2235,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // Clean up tab reference if user closes the search tab
 chrome.tabs.onRemoved.addListener(async (closedTabId) => {
   try {
+    await workerRecoveryPromise;
     const state = await getJobState();
     if (state.searchTabId === closedTabId) {
       await saveJobState({ searchTabId: null, locationApplied: false, locationTabId: null });

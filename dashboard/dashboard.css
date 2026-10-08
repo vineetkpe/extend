@@ -1072,3 +1072,48 @@ input:checked + .slider:before {
   }
 }
 
+
+/* Client weekly ranking workbook import/export */
+.workbook-import-panel {
+  margin: 16px 20px;
+  padding: 18px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+.workbook-import-panel h4 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.workbook-import-panel p, .workbook-location-note {
+  margin: 8px 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.workbook-location-note { margin: 12px 0 0; }
+.workbook-import-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.workbook-file-label {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.workbook-import-controls input {
+  padding: 8px 10px;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  min-width: 160px;
+}
+.workbook-import-controls input[type="file"] { max-width: 330px; }
+.workbook-import-status { margin-top: 12px; overflow-wrap: anywhere; }
+#btn-download-workbook:disabled, #btn-clear-workbook:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}

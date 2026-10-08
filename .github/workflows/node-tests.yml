@@ -1,0 +1,22 @@
+name: Node regression tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  regression-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+      - run: node --check dashboard/dashboard.js && node --check popup/popup.js && node --check background.js && node --check utils/parser.js && node --check utils/rankingWorkbook.js && node --check utils/geolocationProof.js && node --check utils/rememberedLocation.js

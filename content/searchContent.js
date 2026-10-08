@@ -103,7 +103,7 @@
           }
 
           // Wait for DOM to finish rendering
-          await waitForResultsReady(request.timeout || 8000);
+          const resultsReady = await waitForResultsReady(request.timeout || 8000);
 
           // Second check for CAPTCHA in case it appeared dynamically
           if (isInterruptedOrCaptcha()) {
@@ -111,6 +111,15 @@
               status: 'BLOCKED',
               reason: 'CAPTCHA_DETECTED',
               message: 'Google interrupted rank checking. The job has been paused.'
+            });
+            return;
+          }
+
+          if (!resultsReady) {
+            sendResponse({
+              status: 'ERROR',
+              reason: 'SERP_TIMEOUT',
+              message: 'Google search results did not become ready before the timeout.'
             });
             return;
           }
@@ -130,6 +139,16 @@
             startOffset: request.startOffset,
             checkedDepth: request.checkedDepth
           });
+
+          if (!parserOutput || !Array.isArray(parserOutput.results) ||
+              parserOutput.results.length === 0) {
+            sendResponse({
+              status: 'ERROR',
+              reason: 'EMPTY_SERP',
+              message: 'No organic Google results could be verified; ranking is inconclusive.'
+            });
+            return;
+          }
 
           sendResponse({
             status: 'SUCCESS',

@@ -274,36 +274,157 @@ export function parseSingleLine(line) {
  * @param {string} text 
  * @returns {{ valid: Array<object>, errors: Array<object> }}
  */
-export function parseInputRows(text) {
-  if (!text || typeof text !== 'string') {
-    return { valid: [], errors: [] };
+const KEYWORD_HEADER_ALIASES = new Set([
+  'keyword', 'keywords', 'search term', 'search terms', 'query', 'search query',
+  'target keyword', 'target keywords', 'keyword phrase'
+]);
+const URL_HEADER_ALIASES = new Set([
+  'target url', 'target website', 'target page', 'landing page', 'landing page url',
+  'website', 'website url', 'web page', 'url', 'domain', 'site', 'site url'
+]);
+const POSITION_HEADER_ALIASES = new Set([
+  'previous', 'previous rank', 'previous position', 'old rank', 'last rank',
+  'last position', 'current rank', 'current position', 'position', 'rank',
+  'ranking', 'latest rank', 'latest ranking', 'google rank', 'organic rank'
+]);
+
+function splitPasteCells(line, delimiter) {
+  if (!delimiter) return [line];
+  const values = [];
+  let value = '', quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const character = line[i];
+    if (character === '"') {
+      if (quoted && line[i + 1] === '"') { value += '"'; i++; }
+      else quoted = !quoted;
+    } else if (character === delimiter && !quoted) {
+      values.push(value.trim());
+      value = '';
+    } else {
+      value += character;
+    }
+  }
+  values.push(value.trim());
+  return values;
+}
+function pasteDelimiter(line) {
+  if (line.includes('\t')) return '\t';
+  if (line.includes('|')) return '|';
+  if (line.includes(';')) return ';';
+  if (line.includes(',')) return ',';
+  return null;
+}
+function headerMapping(fields) {
+  const normalized = fields.map(value => value.trim().toLowerCase().replace(/\s+/g, ' '));
+  const keywordIndex = normalized.findIndex(value => KEYWORD_HEADER_ALIASES.has(value));
+  const urlIndex = normalized.findIndex(value => URL_HEADER_ALIASES.has(value));
+  const positionIndex = normalized.findIndex(value => POSITION_HEADER_ALIASES.has(value));
+  return keywordIndex >= 0 && (urlIndex >= 0 || positionIndex >= 0)
+    ? { keywordIndex, urlIndex, positionIndex } : null;
+}
+
+function parsePasteRow(line, delimiter, mapping, defaultUrl) {
+  const columns = splitPasteCells(line, delimiter);
+  if (mapping) {
+    const keyword = (columns[mapping.keywordIndex] || '').trim();
+    const target = (mapping.urlIndex < 0 ? '' : columns[mapping.urlIndex] || '').trim()
+      || defaultUrl;
+    const previous = mapping.positionIndex < 0 ? '-'
+      : (columns[mapping.positionIndex] || '-').trim();
+    if (!keyword) return { error: 'Keyword column is empty.' };
+    if (!isValidUrlOrDomain(target)) return { error: 'Target website column is empty or invalid.' };
+    return {
+      keyword,
+      targetUrl: normalizeTargetUrl(target),
+      previousPosition: normalizePreviousPosition(previous)
+    };
   }
 
-  const lines = text.split(/\r?\n/);
-  const valid = [];
-  const errors = [];
+  // A one-column keyword list can share an explicitly chosen target website.
+  if (!delimiter && defaultUrl && !/(?:https?:\/\/|www\.)/i.test(line)) {
+    return {
+      keyword: line.trim(),
+      targetUrl: normalizeTargetUrl(defaultUrl),
+      previousPosition: '-'
+    };
+  }
 
-  lines.forEach((line, index) => {
-    const lineNum = index + 1;
-    const trimmedLine = line.trim();
-    if (!trimmedLine) return; // Skip blank lines
-
-    const parsed = parseSingleLine(trimmedLine);
-    if (parsed.isHeader) {
-      return; // Skip header row
+  if (delimiter) {
+    const urlIndex = columns.findIndex(value => isValidUrlOrDomain(value));
+    if (urlIndex >= 0) {
+      const keywordCells = columns.filter((value, index) =>
+        index !== urlIndex && value && !isPositionToken(value));
+      const position = columns.find((value, index) =>
+        index !== urlIndex && isPositionToken(value)) || '-';
+      const keyword = keywordCells.join(' ').trim();
+      if (keyword) return {
+        keyword,
+        targetUrl: normalizeTargetUrl(columns[urlIndex]),
+        previousPosition: normalizePreviousPosition(position)
+      };
     }
+    if (defaultUrl) {
+      const last = columns[columns.length - 1];
+      const hasPosition = columns.length > 1 && isPositionToken(last);
+      const keyword = (hasPosition ? columns.slice(0, -1) : columns)
+        .filter(Boolean).join(' ').trim();
+      if (keyword) return {
+        keyword,
+        targetUrl: normalizeTargetUrl(defaultUrl),
+        previousPosition: normalizePreviousPosition(hasPosition ? last : '-')
+      };
+    }
+  }
+  return parseSingleLine(line);
+}
 
+/**
+ * Parses heterogeneous copy/paste layouts, including:
+ * - Column headers in arbitrary order (URL | keyword | previous rank)
+ * - Extra unrelated worksheet columns when headers identify the right columns
+ * - Tab, CSV, pipe and semicolon delimiters, with quoted CSV fields
+ * - Keyword-only lists with an explicitly supplied website/defaultTargetUrl
+ * - Legacy keyword + URL + previous-rank rows and space-delimited input
+ *
+ * Invalid rows are reported with line numbers, never silently dropped.
+ * @param {string} text
+ * @param {{defaultTargetUrl?: string}} options
+ */
+export function parseInputRows(text, options = {}) {
+  if (!text || typeof text !== 'string') return { valid: [], errors: [] };
+  const lines = text.split(/\r?\n/);
+  const valid = [], errors = [];
+  const defaultUrl = String(options?.defaultTargetUrl || '').trim();
+  if (defaultUrl && !isValidUrlOrDomain(defaultUrl)) {
+    return { valid, errors: [{ line: 0, raw: defaultUrl, message: 'Default target website is invalid.' }] };
+  }
+
+  let mapping = null, delimiter = null, started = false;
+  lines.forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    const lineNum = index + 1;
+    if (!started) {
+      started = true;
+      delimiter = pasteDelimiter(rawLine);
+      // Single-column spreadsheets often copy their header with the keywords.
+      // Do not rank the literal word "Keyword" as if it were a search term.
+      if (!delimiter && defaultUrl && KEYWORD_HEADER_ALIASES.has(line.toLowerCase())) return;
+      if (delimiter) {
+        mapping = headerMapping(splitPasteCells(rawLine, delimiter));
+        if (mapping) return;
+      }
+    }
+    // Allow classic unquoted rows even when the first line has no delimiter.
+    const rowDelimiter = mapping ? delimiter : pasteDelimiter(rawLine);
+    const parsed = parsePasteRow(line, rowDelimiter, mapping, defaultUrl);
+    if (parsed.isHeader) return;
     if (parsed.error) {
-      errors.push({
-        line: lineNum,
-        raw: trimmedLine,
-        message: parsed.error
-      });
+      errors.push({ line: lineNum, raw: line, message: parsed.error });
       return;
     }
-
     valid.push({
-      id: `row_${lineNum}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `row_${lineNum}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       originalIndex: valid.length,
       line: lineNum,
       keyword: parsed.keyword,
@@ -311,7 +432,6 @@ export function parseInputRows(text) {
       previousPosition: parsed.previousPosition
     });
   });
-
   return { valid, errors };
 }
 

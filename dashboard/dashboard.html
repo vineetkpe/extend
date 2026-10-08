@@ -116,6 +116,7 @@
               <button id="btn-clear-location" class="btn btn-outline btn-sm">Reset Location</button>
             </div>
             <div id="location-msg" class="inline-msg"></div>
+            <p class="workbook-location-note">Valid coordinates are remembered locally until Reset Location. Browser simulation does not change the public IP. Google search rankings can still vary by IP address, account, language and personalization. This is not verified Google Maps / GMB position tracking.</p>
           </div>
         </div>
 
@@ -240,6 +241,9 @@
               <button id="btn-copy-all" class="btn btn-secondary btn-sm" title="Copy full table as TSV">
                 Copy Full TSV
               </button>
+              <button id="btn-download-workbook" class="btn btn-primary btn-sm" disabled title="Download updated copy of your original .xlsx workbook">
+                Download Updated XLSX
+              </button>
               <button id="btn-download-csv" class="btn btn-secondary btn-sm" title="Download formatted CSV report">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                 Download CSV
@@ -281,16 +285,46 @@
 
         <!-- TAB 2: Keyword Input Area -->
         <div class="tab-pane" id="tab-keywords">
+          <div class="workbook-import-panel">
+            <h4>Import Any Website Ranking Workbook (.xlsx)</h4>
+            <p>Detects keyword and website URL columns across worksheets. Choose or adjust column mappings for different SEO clients and spreadsheet formats. Previous weekly rankings are optional. Other sheets stay unchanged; Google Maps/GMB ranking is a separate check.</p>
+            <div class="workbook-import-controls">
+              <label class="workbook-file-label" for="workbook-file">Select your existing Excel workbook</label>
+              <input id="workbook-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+              <label class="workbook-file-label" for="workbook-date">New ranking date</label>
+              <input id="workbook-date" type="date">
+              <button id="btn-clear-workbook" class="btn btn-secondary btn-sm" type="button" disabled>Return to Manual Input</button>
+            </div>
+            <div class="workbook-import-controls" style="margin-top: 10px">
+              <label class="workbook-file-label" for="workbook-sheet">Ranking worksheet</label>
+              <select id="workbook-sheet" aria-label="Ranking worksheet"></select>
+              <label class="workbook-file-label" for="workbook-header-row">Header row</label>
+              <input id="workbook-header-row" type="number" min="1" max="10000" placeholder="Auto" title="Optional header row, e.g. 1 or 9">
+              <label class="workbook-file-label" for="workbook-keyword-col">Keyword col</label>
+              <input id="workbook-keyword-col" type="text" maxlength="3" placeholder="Auto (A)">
+              <label class="workbook-file-label" for="workbook-url-col">Website URL col</label>
+              <input id="workbook-url-col" type="text" maxlength="3" placeholder="Auto (B)">
+              <label class="workbook-file-label" for="workbook-baseline-col">Previous rank col</label>
+              <input id="workbook-baseline-col" type="text" maxlength="3" placeholder="Auto">
+              <button id="btn-apply-workbook-map" class="btn btn-primary btn-sm" type="button" disabled>Load with This Mapping</button>
+            </div>
+            <p id="workbook-import-status" class="workbook-import-status" role="status">No workbook loaded. Importing a workbook keeps its raw contents only in this dashboard's memory; nothing is uploaded to a server.</p>
+          </div>
           <div class="keywords-helper-header">
             <div class="helper-text">
               <h4>20–80 Keyword Batch Management</h4>
-              <p>Paste rows directly from Excel — separators are detected automatically. Format: <code>Keyword [TAB/comma/space] Target URL [TAB/comma/space] Previous Position</code></p>
+              <p>Paste rows with keyword and website columns in any order, or paste a keyword-only list using the optional default target site.</p>
             </div>
             <div class="helper-actions">
               <button id="btn-load-sample" class="btn btn-secondary btn-sm">Load 20 Sample Rows</button>
               <button id="btn-save-keywords" class="btn btn-primary btn-sm">Save Keywords to Project</button>
             </div>
           </div>
+          <div class="workbook-import-controls" style="margin: 12px 0;">
+            <label class="workbook-file-label" for="default-target-site">Default website for keyword-only lists</label>
+            <input id="default-target-site" type="text" placeholder="example.com or https://example.com/" autocomplete="off">
+          </div>
+          <p class="format-hint" style="margin-bottom:10px">Paste any table with headers such as <code>Keyword</code>, <code>Website</code> and <code>Previous Rank</code>, in any order. Extra columns are ignored. Or paste one keyword per line and supply a default website above.</p>
           <div class="textarea-wrapper">
             <textarea id="keywords-textarea" rows="18" placeholder="Paste from Excel or enter:&#10;prompt optimizer   getpromptoptimizer.com   89&#10;best local seo   example.com/seo   12&#10;emergency dentist   example.com/urgent   -"></textarea>
           </div>
@@ -313,14 +347,14 @@
                 Your SEO data is processed locally in this browser session.
               </p>
               <p style="font-size: 13px; color: #d1d5db;">
-                We do not receive or store your keywords, client domains, rankings, locations, or results.
+                We do not receive your keywords, client domains, rankings, locations, or results. Keyword and client data remain in session memory. To prevent re-entry, only your last valid latitude/longitude/accuracy are saved on this device (chrome.storage.local) until Reset Location is clicked.
                 There is NO backend server, NO cloud database, NO analytics, NO telemetry, and NO error-tracking SDK.
               </p>
               <p style="font-size: 13px; color: #d1d5db;">
                 Google search queries are sent directly to Google when rank checking runs.
               </p>
               <p style="margin-bottom: 0; font-size: 13px; color: #9ca3af;">
-                Session data is cleared when the browser session ends. If you want to keep your project for future sessions, use <strong>Export JSON</strong> to save a file locally on your device.
+                Client projects and ranking data are cleared when the browser session ends. Remembered device coordinates remain until Reset Location, including after Clear Session Data. To keep your project for future sessions, use <strong>Export JSON</strong> to save a file locally on your device.
               </p>
             </div>
             <div style="display: flex; gap: 12px; align-items: center;">
