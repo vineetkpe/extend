@@ -50,6 +50,7 @@
       // Check immediately
       if (document.querySelector('#rso') ||
           document.querySelector('#search') ||
+          document.querySelector('#center_col') ||
           document.querySelector('div.g') ||
           document.querySelector('div.MjjYud') ||
           document.querySelector('#topstuff') ||
@@ -66,6 +67,7 @@
 
         if (document.querySelector('#rso') ||
             document.querySelector('#search') ||
+          document.querySelector('#center_col') ||
             document.querySelector('div.g') ||
             document.querySelector('div.MjjYud') ||
             document.querySelector('#topstuff') ||
