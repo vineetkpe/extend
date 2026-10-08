@@ -179,3 +179,31 @@ test('rejects formula-bearing ranking sheets to avoid breaking references', asyn
   const inspected = await inspectRankingWorkbook(bytes);
   await assert.rejects(() => buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-08'), /formulas/);
 });
+
+test('reads real XLSX-style raw-deflate ZIP entries and keeps them valid after export', async () => {
+  const files = fixtureFiles();
+  const zip = new WorkbookZip(zipStored(files));
+  const part = 'xl/worksheets/sheet2.xml';
+  const plain = te.encode(files[part]);
+  const compressed = new Uint8Array(
+    await new Response(new Blob([plain]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer()
+  );
+  const originalEntry = zip.entries.get(part);
+  zip.entries.set(part, {
+    ...originalEntry, method: 8,
+    compressed, crc: crc32(plain), uncompressedSize: plain.length
+  });
+
+  const deflated = new Uint8Array(await zip.toBlob().arrayBuffer());
+  const inspected = await inspectRankingWorkbook(deflated);
+  assert.equal(inspected.rows.length, 2);
+
+  const output = await buildUpdatedRankingWorkbook(deflated, inspected, [
+    { id: 'workbook_row_10', originalIndex: 0, currentPosition: 1, status: 'EXACT PAGE' }
+  ], '2026-10-08');
+  const exported = new WorkbookZip(await output.arrayBuffer());
+  const xml = td.decode(await exported.read(part));
+  assert.match(xml, /r="G10"/);
+  assert.equal(exported.entries.get(part).method, 0);
+  assert.equal(td.decode(await exported.read('xl/worksheets/sheet3.xml')), files['xl/worksheets/sheet3.xml']);
+});
