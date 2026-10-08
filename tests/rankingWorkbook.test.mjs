@@ -176,8 +176,7 @@ test('rejects formula-bearing ranking sheets to avoid breaking references', asyn
     '<c r="H10" s="82"><v>8</v></c>', '<c r="H10" s="82"><f>G10*2</f><v>8</v></c>'
   );
   const bytes = zipStored(files);
-  const inspected = await inspectRankingWorkbook(bytes);
-  await assert.rejects(() => buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-08'), /formulas/);
+  await assert.rejects(() => inspectRankingWorkbook(bytes), /formulas/);
 });
 
 test('reads real XLSX-style raw-deflate ZIP entries and keeps them valid after export', async () => {
@@ -283,4 +282,51 @@ test('selecting a worksheet without ranking columns fails clearly', async () => 
     () => inspectRankingWorkbook(bytes, { sheetName: 'GMB Ranking' }),
     /keyword and website URL columns/i
   );
+});
+
+test('workbook import refuses unsupported formula sheets before spending time checking keywords', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace('<autoFilter ', '<conditionalFormatting sqref="G10:G11"><cfRule type="expression" priority="1"/></conditionalFormatting><autoFilter ');
+  await assert.rejects(() => inspectRankingWorkbook(zipStored(files)), /advanced cell references/);
+});
+
+test('export never assigns a result to a different keyword/URL row based on index alone', async () => {
+  const { bytes, inspected } = await fixture();
+  const results = [
+    { id: 'workbook_row_10', originalIndex: 0, keyword: 'unrelated keyword',
+      targetUrl: 'https://wrong.example/', currentPosition: 1, status: 'EXACT PAGE' },
+    { id: 'workbook_row_11', originalIndex: 0, keyword: 'dryer vent cleaning',
+      targetUrl: 'https://example.com/repair', currentPosition: 12, status: 'EXACT PAGE' }
+  ];
+  const blob = await buildUpdatedRankingWorkbook(bytes, inspected, results, '2026-10-08');
+  const zip = new WorkbookZip(await blob.arrayBuffer());
+  const doc = new DOMParser().parseFromString(td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G10')), 'NOT CHECKED');
+  assert.equal(cellValue(c(doc, 'G11')), '12');
+});
+
+test('id-less legacy results require matching row index, keyword AND target page', async () => {
+  const { bytes, inspected } = await fixture();
+  const results = [
+    { originalIndex: 1, keyword: 'dryer vent cleaning',
+      targetUrl: 'https://example.com/vent', currentPosition: 1, status: 'EXACT PAGE' },
+    { originalIndex: 0, keyword: 'dryer vent cleaning',
+      targetUrl: 'https://example.com/vent', currentPosition: 9, status: 'EXACT PAGE' }
+  ];
+  const blob = await buildUpdatedRankingWorkbook(bytes, inspected, results, '2026-10-08');
+  const zip = new WorkbookZip(await blob.arrayBuffer());
+  const doc = new DOMParser().parseFromString(td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G10')), '9');
+  assert.equal(cellValue(c(doc, 'G11')), 'NOT CHECKED');
+});
+
+test('blank client latitude or longitude does not silently become 0,0', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet1.xml'] = files['xl/worksheets/sheet1.xml']
+    .replace('<v>34.1478</v>', '<v></v>');
+  const inspected = await inspectRankingWorkbook(zipStored(files));
+  assert.equal(inspected.location.hasCoordinates, false);
+  assert.equal(inspected.location.latitude, '');
+  assert.equal(inspected.location.longitude, '');
 });

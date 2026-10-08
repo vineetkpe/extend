@@ -943,6 +943,34 @@ function renderResultsTable(results) {
  * Wires up UI event listeners.
  */
 function setupEventListeners() {
+  function allowProjectMutation() {
+    if (currentJobState && ['RUNNING', 'PAUSED', 'BLOCKED'].includes(currentJobState.status)) {
+      showToast('Stop the active or paused rank check before changing projects.', 'error');
+      return false;
+    }
+    return true;
+  }
+
+  // Keep country, depth and delay specific to the selected client.
+  async function persistProjectSearchSettings() {
+    if (!activeProject) return;
+    const updates = {
+      googleDomain: el.googleDomain.value,
+      defaultMaxDepth: Number(el.maxDepth.value) || 50,
+      defaultDelaySeconds: Math.max(5, Number(el.delaySeconds.value) || 8)
+    };
+    const projectId = activeProject.id;
+    try {
+      const updated = await updateProject(projectId, updates);
+      if (activeProject?.id === projectId) activeProject = updated;
+    } catch (error) {
+      showToast('Could not save search settings: ' + error.message, 'error');
+    }
+  }
+  for (const field of [el.googleDomain, el.maxDepth, el.delaySeconds]) {
+    field.addEventListener('change', persistProjectSearchSettings);
+  }
+
   // Tab switching
   el.tabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -973,6 +1001,7 @@ function setupEventListeners() {
 
   // Bug 1 Fix: Project New/Edit reliably saves location per project
   el.btnNewProject.addEventListener('click', () => {
+    if (!allowProjectMutation()) return;
     el.modalProjectTitle.textContent = 'New Client Project';
     el.modalProjectName.value = '';
     el.modalProjectDomain.value = '';
@@ -989,6 +1018,7 @@ function setupEventListeners() {
   });
 
   el.btnEditProject.addEventListener('click', () => {
+    if (!allowProjectMutation()) return;
     if (!activeProject) return;
     const cfg = activeProject.config || activeProject;
     el.modalProjectTitle.textContent = 'Edit Client Project';
@@ -1010,6 +1040,7 @@ function setupEventListeners() {
   el.btnCloseProjectModal.addEventListener('click', () => { el.projectModal.style.display = 'none'; });
 
   el.btnSaveProjectModal.addEventListener('click', async () => {
+    if (!allowProjectMutation()) return;
     const name = el.modalProjectName.value.trim();
     if (!name) {
       showToast('Project name is required.', 'error');
@@ -1022,7 +1053,7 @@ function setupEventListeners() {
     let lon = el.modalProjectLon ? el.modalProjectLon.value.trim() : '';
     let acc = el.modalProjectAcc ? (Number(el.modalProjectAcc.value) || 20) : 20;
 
-    if (useLoc && (lat || lon)) {
+    if (useLoc) {
       const val = validateCoordinates(lat, lon, acc);
       if (!val.valid) {
         showToast(val.error, 'error');
@@ -1055,17 +1086,21 @@ function setupEventListeners() {
       showToast(`Updated project: ${name}`, 'success');
     }
 
+    resetWorkbookImport();
     el.projectModal.style.display = 'none';
     await refreshProjectsList();
   });
 
   el.btnDeleteProject.addEventListener('click', () => {
+    if (!allowProjectMutation()) return;
     if (!activeProject) return;
     openConfirmModal(
       'Delete Project',
       `Are you sure you want to delete session project "${activeProject.config?.projectName}"? All session keywords for this project will be removed.`,
       async () => {
+        if (!allowProjectMutation()) return;
         try {
+          resetWorkbookImport();
           await deleteProject(activeProject.id);
           showToast('Project deleted.', 'success');
           await refreshProjectsList();
@@ -1097,6 +1132,7 @@ function setupEventListeners() {
 
   // Import Project JSON (Safe local validation)
   el.btnImportProject.addEventListener('click', () => {
+    if (!allowProjectMutation()) return;
     el.importJsonFile.value = '';
     el.importJsonText.value = '';
     el.importModal.style.display = 'flex';
@@ -1117,6 +1153,7 @@ function setupEventListeners() {
   });
 
   el.btnSubmitImportModal.addEventListener('click', async () => {
+    if (!allowProjectMutation()) return;
     const jsonStr = el.importJsonText.value.trim();
     if (!jsonStr) {
       showToast('Please select a file or paste project JSON.', 'error');
@@ -1124,6 +1161,7 @@ function setupEventListeners() {
     }
     try {
       const imported = await importProjectJson(jsonStr);
+      resetWorkbookImport();
       showToast(`Imported project: ${imported.config?.projectName || 'Project'}`, 'success');
       el.importModal.style.display = 'none';
       await refreshProjectsList();
@@ -1139,7 +1177,10 @@ function setupEventListeners() {
       'This will stop any active rank check, detach the location simulation debugger, and wipe all projects, keywords, and results from current browser session memory. Harmless preferences will remain. Proceed?',
       async () => {
         try {
-          await chrome.runtime.sendMessage({ action: 'CLEAR_SESSION_DATA' });
+          const response = await chrome.runtime.sendMessage({ action: 'CLEAR_SESSION_DATA' });
+          if (!response?.success) throw new Error(response?.error || 'Session cleanup was not confirmed.');
+          resetWorkbookImport();
+          currentJobState = null;
           showToast('Session data cleared successfully.', 'info');
           await refreshProjectsList();
           await syncBackgroundState();
@@ -1534,10 +1575,6 @@ function setupEventListeners() {
     }
     const rows = valid;
 
-    if (activeProject) {
-      await saveProjectKeywords(activeProject.id, rows);
-    }
-
     const settings = {
       googleDomain: el.googleDomain.value,
       maxPosition: Number(el.maxDepth.value) || 50,
@@ -1558,15 +1595,20 @@ function setupEventListeners() {
       }
     }
 
+    const startedProjectId = activeProject?.id || null;
     try {
       const resp = await chrome.runtime.sendMessage({
         action: 'START_JOB',
         queue: rows,
         settings,
-        projectId: activeProject ? activeProject.id : null
+        projectId: startedProjectId
       });
 
       if (resp && resp.success) {
+        if (startedProjectId) {
+          await saveProjectKeywords(startedProjectId, rows);
+          if (activeProject?.id === startedProjectId) activeProject.keywords = rows;
+        }
         if (importedWorkbook) importedWorkbook.startedRunId = resp.state?.runId || null;
         syncWorkbookDownloadButton();
         showToast(`Rank check started for ${rows.length} keywords.`, 'success');

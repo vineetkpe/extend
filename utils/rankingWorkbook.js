@@ -4,7 +4,7 @@
  * No workbook bytes leave the browser or enter chrome.storage.*.
  */
 import { WorkbookZip } from './workbookZip.js';
-import { isValidTargetUrl } from './urlNormalizer.js';
+import { isValidTargetUrl, normalizeUrl } from './urlNormalizer.js';
 
 const MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -145,8 +145,13 @@ function getClientLocation(clientDoc, strings) {
     if (label) values[label] = val;
   }
   const matching = predicate => Object.entries(values).find(([k]) => predicate(k))?.[1];
-  const latitude = Number(matching(k => /^lat(?:itude)?\b/.test(k)));
-  const longitude = Number(matching(k => /^(?:long|longitude|lng)\b/.test(k)));
+  const rawLatitude = matching(k => /^lat(?:itude)?\b/.test(k));
+  const rawLongitude = matching(k => /^(?:long|longitude|lng)\b/.test(k));
+  // An empty workbook field is NOT the Equator/Greenwich (0,0).
+  const latitude = rawLatitude === undefined || rawLatitude === null ||
+    String(rawLatitude).trim() === '' ? NaN : Number(rawLatitude);
+  const longitude = rawLongitude === undefined || rawLongitude === null ||
+    String(rawLongitude).trim() === '' ? NaN : Number(rawLongitude);
   const valid = Number.isFinite(latitude) && Number.isFinite(longitude) &&
     latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
   return {
@@ -204,6 +209,9 @@ export async function inspectRankingWorkbook(bytes, options = {}) {
   if (!organic || !header) {
     throw new Error('No worksheet had recognizable keyword and URL headers. Choose a worksheet and map its columns.');
   }
+  // Detect unsupported formula/table ranges at import time. It is worse to
+  // check 50 keywords successfully and only then learn export is impossible.
+  assertSafeToInsert(organic, header.firstRankColumn);
   const rows = [];
   for (const row of allElements(organic, 'row')) {
     const rowNumber = Number(row.getAttribute('r'));
@@ -331,13 +339,24 @@ export async function buildUpdatedRankingWorkbook(bytes, inspected, results, asO
   const sheet = await readXml(zip, inspected.organicSheet);
   const { firstRankColumn, headerRow, latestDateSerial } = inspected.header;
   assertSafeToInsert(sheet, firstRankColumn);
-  const resultsById = new Map((results || []).filter(Boolean).map(r => [String(r.id), r]));
-  const resultsByIndex = new Map((results || []).filter(Boolean).map((r, i) => [
-    Number.isInteger(r.originalIndex) ? r.originalIndex : i, r
-  ]));
-  const rowToResult = new Map(inspected.rows.map((item, i) => [
-    item.sheetRow, resultsById.get(item.id) || resultsByIndex.get(i)
-  ]));
+  const resultsById = new Map((results || []).filter(r => r && r.id !== undefined)
+    .map(r => [String(r.id), r]));
+  // Index-only fallbacks must prove BOTH keyword and target page identity.
+  // A result with an ID for another workbook row may never silently land in
+  // this row simply because sparse arrays changed their offsets.
+  const validForRow = (item, result) => Boolean(result &&
+    (!result.keyword || result.keyword.trim() === item.keyword) &&
+    (!result.targetUrl || normalizeUrl(result.targetUrl) === normalizeUrl(item.targetUrl)));
+  const rowToResult = new Map(inspected.rows.map(item => {
+    const byId = resultsById.get(item.id);
+    const byIndex = (results || []).find(r =>
+      r && (r.id === null || r.id === undefined) &&
+      r.originalIndex === item.originalIndex &&
+      r.keyword === item.keyword &&
+      normalizeUrl(r.targetUrl) === normalizeUrl(item.targetUrl)
+    );
+    return [item.sheetRow, validForRow(item, byId) ? byId : (byIndex || null)];
+  }));
 
   for (const row of allElements(sheet, 'row')) {
     const rowNumber = Number(row.getAttribute('r'));
