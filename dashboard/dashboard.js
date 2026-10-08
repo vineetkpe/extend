@@ -516,6 +516,7 @@ async function syncBackgroundState() {
     if (response && response.state) {
       currentJobState = response.state;
       renderJobState(response.state);
+      syncWorkbookDownloadButton();
 
       // Location state display
       if (response.state.locationState) {
