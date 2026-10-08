@@ -460,16 +460,30 @@ export async function promoteCurrentToPrevious(projectId, currentResults = []) {
 
   const updatedKeywords = existingKeywords.map((kw, index) => {
     const res = matchedResults.get(index);
-    if (res && res.currentPosition !== undefined && res.currentPosition !== null) {
-      const prevPos = typeof res.currentPosition === 'number' ? res.currentPosition : null;
-      return {
-        ...kw,
-        previousPosition: prevPos,
-        lastCurrentPosition: null,
-        lastCheckedAt: new Date().toISOString()
-      };
+    if (!res) return kw;
+
+    // A technical error, interrupted check, or untouched row must NEVER
+    // erase a valid historical position. An explicitly verified Not Found
+    // result, however, can legitimately promote an unranked baseline.
+    if (res.status === 'ERROR' || res.matchStatus === 'ERROR' ||
+        res.currentPosition === 'Error' || res.status === 'NOT CHECKED' ||
+        res.matchStatus === 'NOT_CHECKED' || res.currentPosition === 'NOT CHECKED') {
+      return kw;
     }
-    return kw;
+    const ranked = typeof res.currentPosition === 'number' &&
+      Number.isInteger(res.currentPosition) && res.currentPosition > 0;
+    const verifiedNotFound = res.currentPosition === 'Not Found' &&
+      (res.status === 'TARGET PAGE NOT FOUND' ||
+       res.matchStatus === 'TARGET PAGE NOT FOUND' ||
+       res.matchStatus === 'OTHER DOMAIN PAGE FOUND');
+    if (!ranked && !verifiedNotFound) return kw;
+
+    return {
+      ...kw,
+      previousPosition: ranked ? res.currentPosition : '-',
+      lastCurrentPosition: null,
+      lastCheckedAt: res.checkedAt || new Date().toISOString()
+    };
   });
 
   projects[projectId].keywords = updatedKeywords;
