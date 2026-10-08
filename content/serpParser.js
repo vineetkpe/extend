@@ -38,6 +38,9 @@
     '#ai-overview',
     '#aic',
     '.M8OgIe',
+    // Additional rendered AIO wrappers used by newer SERP variants
+    '.Kevs9',
+    'div[jsname="dvXlsc"]',
     '[data-testid="ai-overview"]',
     '[data-module-type="ai-overview"]',
     '[data-async-context*="ai_overview"]',
@@ -152,6 +155,37 @@
       }
     }
     return false;
+  }
+
+  /**
+   * A result title needs to be rendered, not hidden in a collapsed,
+   * preloaded or cloned SERP component. A hidden h3 cannot consume a
+   * visible organic position.
+   */
+  function isRenderedHeading(heading) {
+    if (typeof heading.getClientRects === 'function' && heading.getClientRects().length === 0) {
+      return false;
+    }
+    if (typeof window.getComputedStyle === 'function') {
+      const style = window.getComputedStyle(heading);
+      if (style && (style.display === 'none' || style.visibility === 'hidden' ||
+                    style.visibility === 'collapse')) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Some AI Overview citation panels do not carry stable class names. An
+   * explicit AI Overview heading in that SAME result-region wrapper is a
+   * structural signal. Do not inspect parents beyond the nearest bounded
+   * region, otherwise the whole results page could be falsely excluded.
+   */
+  function isInLabeledAIPanel(heading) {
+    const card = heading.closest('.MjjYud') || heading.closest('[role="region"]');
+    if (!card) return false;
+    const label = card.querySelector('h2') ||
+      card.querySelector('[aria-label="AI Overview"]');
+    return Boolean(label && /^AI Overview\b/i.test((label.textContent || '').trim()));
   }
 
   /**
@@ -275,19 +309,29 @@
     const results = [];
     const seenNormalized = new Set();
     const countedResultContainers = new Set();
-    // Never scan the whole document as a fallback: unrelated headings in the
-    // header, sidebar and footer must not count as organic rankings.
-    const root = rootDoc.querySelector('#rso') || rootDoc.querySelector('#search');
-    if (!root) {
+    // Google changes the main results wrapper. #center_col is a
+    // results-only, bounded fallback; NEVER scan the full document.
+    // Prefer the most specific root, but try the next wrapper if it contains
+    // no validated organic listings (e.g. an AI-only #rso).
+    const roots = ['#rso', '#search', '#center_col']
+      .map(selector => ({ selector, node: rootDoc.querySelector(selector) }))
+      .filter(candidate => candidate.node);
+    if (!roots.length) {
       debugInfo.missingResultsRoot = true;
       return results;
     }
 
-    const headings = root.querySelectorAll('h3');
-    debugInfo.headingsFound = headings.length;
+    for (const candidate of roots) {
+    const headings = candidate.node.querySelectorAll('h3');
+    debugInfo.headingsFound += headings.length;
+    debugInfo.rootUsed = candidate.selector;
     for (const heading of headings) {
-      if (isInsideExcluded(heading)) {
+      if (isInsideExcluded(heading) || isInLabeledAIPanel(heading)) {
         debugInfo.skippedExcluded++;
+        continue;
+      }
+      if (!isRenderedHeading(heading)) {
+        debugInfo.skippedHidden++;
         continue;
       }
       // A traditional .g web-result block has ONE primary organic listing.
@@ -322,6 +366,8 @@
         normalizedUrl
       });
     }
+    if (results.length > 0) break;
+    }
     return results;
   }
 
@@ -345,7 +391,9 @@
       skippedInternal: 0,
       skippedDuplicates: 0,
       skippedSecondaryLinks: 0,
-      countingPolicy: 'strict-organic-web-v1',
+      skippedHidden: 0,
+      rootUsed: null,
+      countingPolicy: 'strict-organic-web-v2',
       strategyUsed: 'headings-dom-order'
     };
 
@@ -364,6 +412,8 @@
     // Attach debug helper to window for manual console inspection if debug is true
     if (debug) {
       window.LOCAL_RANK_DEBUG = {
+        // Exact ordered URL list lets a tester compare rank #1, #2 etc.
+        // against the same loaded Google results page.
         keyword,
         startOffset,
         checkedDepth: finalCheckedDepth,

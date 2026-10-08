@@ -686,5 +686,204 @@
         ]
       }
     ]
+  },
+  "new-center-col-layout": {
+    "tag": "body",
+    "children": [
+      {
+        "tag": "header",
+        "children": [
+          {
+            "tag": "a",
+            "href": "https://header.example/irrelevant",
+            "children": [
+              {
+                "tag": "h3",
+                "text": "Nav item",
+                "attrs": {}
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "div",
+        "id": "center_col",
+        "children": [
+          {
+            "tag": "div",
+            "id": "rso",
+            "children": [
+              {
+                "tag": "div",
+                "class": "Kevs9",
+                "children": [
+                  {
+                    "tag": "a",
+                    "href": "https://ai-example.com/wrong-1",
+                    "children": [
+                      {
+                        "tag": "h3",
+                        "text": "AI citation",
+                        "attrs": {}
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "MjjYud",
+            "children": [
+              {
+                "tag": "div",
+                "attrs": {
+                  "jsname": "dvXlsc"
+                },
+                "children": [
+                  {
+                    "tag": "a",
+                    "href": "https://ai-example.com/wrong-2",
+                    "children": [
+                      {
+                        "tag": "h3",
+                        "text": "More AI citation",
+                        "attrs": {}
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "MjjYud",
+            "children": [
+              {
+                "tag": "h2",
+                "text": "AI Overview"
+              },
+              {
+                "tag": "a",
+                "href": "https://ai-example.com/wrong-3",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "AI citation in unlabeled panel",
+                    "attrs": {}
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "MjjYud",
+            "children": [
+              {
+                "tag": "div",
+                "class": "yuRUbf",
+                "children": [
+                  {
+                    "tag": "a",
+                    "href": "https://organic.example/one",
+                    "children": [
+                      {
+                        "tag": "h3",
+                        "text": "Real organic #1",
+                        "attrs": {}
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "tag": "a",
+                "href": "https://organic.example/hidden",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Hidden copied heading",
+                    "attrs": {
+                      "data-mock-hidden": "true"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "MjjYud",
+            "children": [
+              {
+                "tag": "div",
+                "class": "yuRUbf",
+                "children": [
+                  {
+                    "tag": "a",
+                    "href": "https://organic.example/two",
+                    "children": [
+                      {
+                        "tag": "h3",
+                        "text": "Real organic #2",
+                        "attrs": {}
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "footer",
+        "children": [
+          {
+            "tag": "a",
+            "href": "https://footer.example/nonorganic",
+            "children": [
+              {
+                "tag": "h3",
+                "text": "Footer link",
+                "attrs": {}
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "no-old-roots": {
+    "tag": "body",
+    "children": [
+      {
+        "tag": "div",
+        "id": "center_col",
+        "children": [
+          {
+            "tag": "div",
+            "class": "MjjYud",
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://organic.example/works",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Organic only under new root",
+                    "attrs": {}
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

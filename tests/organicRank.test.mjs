@@ -44,7 +44,7 @@ test('invalid URLs and empty pages are inconclusive rather than Not Found', () =
 });
 
 test('organic rank definition is explicit and consistent across pages', () => {
-  assert.equal(ORGANIC_COUNTING_POLICY, 'strict-organic-web-v1');
+  assert.equal(ORGANIC_COUNTING_POLICY, 'strict-organic-web-v2');
   const first = prepareOrganicPage([result('a'), result('b')]);
   const second = prepareOrganicPage([result('c'), result('d')], first.listings.map(r => r.normalizedUrl), 10);
   assert.equal(first.ok, true);

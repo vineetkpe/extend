@@ -6,7 +6,7 @@
  */
 import { normalizeUrl } from './urlNormalizer.js';
 
-export const ORGANIC_COUNTING_POLICY = 'strict-organic-web-v1';
+export const ORGANIC_COUNTING_POLICY = 'strict-organic-web-v2';
 
 export function prepareOrganicPage(pageResults, previouslySeen = [], startOffset = 0) {
   if (!Array.isArray(pageResults) || !pageResults.length) {

@@ -699,6 +699,50 @@ function renderJobState(state) {
 }
 
 /**
+ * An auditable organic rank must have an inspectable ordered URL list.
+ * All values render as plain text, never injected as HTML.
+ */
+function openOrganicRankAudit(item) {
+  const audit = Array.isArray(item.organicAudit) ? item.organicAudit : [];
+  if (!audit.length) return;
+  const dialog = document.createElement('dialog');
+  dialog.style.maxWidth = 'min(820px, 94vw)';
+  dialog.style.maxHeight = '85vh';
+  dialog.style.overflow = 'auto';
+  dialog.style.padding = '22px';
+  dialog.style.borderRadius = '12px';
+
+  const heading = document.createElement('h3');
+  heading.textContent = 'Counted organic listings: ' + (item.keyword || '');
+  dialog.appendChild(heading);
+
+  const note = document.createElement('p');
+  note.textContent = 'Only these URL listings contributed to the reported rank. AI Overviews, ads, packs and carousels should not appear here. This list describes the Google page SERPTrack analyzed, which may differ from your own search session.';
+  note.style.fontSize = '13px';
+  dialog.appendChild(note);
+
+  const list = document.createElement('ol');
+  list.style.paddingLeft = '32px';
+  for (const entry of audit) {
+    const row = document.createElement('li');
+    row.style.marginBottom = '10px';
+    row.style.overflowWrap = 'anywhere';
+    row.textContent = (entry.title || '(untitled)') + ' — ' + entry.url;
+    list.appendChild(row);
+  }
+  dialog.appendChild(list);
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn btn-primary btn-sm';
+  button.textContent = 'Close';
+  button.addEventListener('click', () => dialog.close());
+  dialog.appendChild(button);
+  dialog.addEventListener('close', () => dialog.remove());
+  document.body.appendChild(dialog);
+  dialog.showModal();
+}
+
+/**
  * Renders the results table with safe DOM text nodes.
  * Content Security: Zero innerHTML used for client/user data.
  * Bug 4 Fix: Never displays another project's results.
@@ -803,6 +847,17 @@ function renderResultsTable(results) {
     pill.className = rankPillClass;
     pill.textContent = String(currentPosText);
     tdCur.appendChild(pill);
+    if (Array.isArray(item.organicAudit) && item.organicAudit.length > 0) {
+      const auditButton = document.createElement('button');
+      auditButton.type = 'button';
+      auditButton.className = 'btn btn-secondary btn-sm';
+      auditButton.textContent = 'Audit';
+      auditButton.title = 'Show each organic URL counted toward this rank';
+      auditButton.style.display = 'block';
+      auditButton.style.margin = '4px auto 0';
+      auditButton.addEventListener('click', () => openOrganicRankAudit(item));
+      tdCur.appendChild(auditButton);
+    }
     tr.appendChild(tdCur);
 
     // 6. Change
