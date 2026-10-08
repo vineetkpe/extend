@@ -164,3 +164,19 @@ Use the Chrome extension's debug mode on an actual Google SERP and review
 with skipped-feature and secondary-heading counts. The parser uses structural
 selectors which can change as Google updates its search UI; synthetic tests
 do not establish accuracy on every live query or country.
+
+
+### Diagnosing an incorrect Organic Rank (v1.0.2)
+
+After running a keyword, open the **Dashboard → Results** table and click **Audit**
+under that row's Organic Rank. The modal lists the exact organic URLs the
+extension counted in sequence. Compare this list against Google's *same*
+results tab, country domain, keyword and search session.
+
+In v1.0.2, the parser handles `#center_col` layouts when `#rso` and
+`#search` are missing or only hold AI content, ignores hidden result headings,
+and filters additional AI Overview containers. Unrecognized layouts may still
+require updating the parser, and an inconclusive extraction is reported as
+ERROR rather than an invented organic position. A Google position also varies
+by IP, language, device, account, and time: device-coordinate simulation
+alone cannot guarantee geographically identical SERPs.
