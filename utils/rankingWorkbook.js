@@ -40,7 +40,7 @@ function sheetPath(workbook, rels, sheetName) {
   return path;
 }
 function columnNumber(reference) {
-  const part = String(reference || '').match(/^\\$?([A-Z]+)/i);
+  const part = String(reference || '').match(/^\$?([A-Z]+)/i);
   if (!part) return 0;
   let col = 0;
   for (const ch of part[1].toUpperCase()) col = col * 26 + ch.charCodeAt(0) - 64;
