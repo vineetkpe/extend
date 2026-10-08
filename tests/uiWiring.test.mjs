@@ -48,3 +48,24 @@ test('dashboard blocks new, edit, import and delete project changes while job is
     assert.match(source, new RegExp('el\\.' + action + '\\.addEventListener\\(\\x27click\\x27, \\(\\) => \\{\\s*if \\(\\!allowProjectMutation\\(\\)\\) return;'));
   }
 });
+
+test('popup and dashboard restore Google country, depth and delay per project', () => {
+  const popup = read('popup/popup.js');
+  const dashboard = read('dashboard/dashboard.js');
+  for (const key of ['googleDomain', 'defaultMaxDepth', 'defaultDelaySeconds']) {
+    assert.ok(popup.includes(key), 'Popup must use ' + key);
+    assert.ok(dashboard.includes(key), 'Dashboard must use ' + key);
+  }
+  assert.match(popup, /loadProjectSearchSettings\(activeProject\)/);
+  assert.match(popup, /updateProject\(projectId, updates\)/);
+  assert.match(dashboard, /persistProjectSearchSettings\(\)/);
+  assert.match(dashboard, /field\.addEventListener\('change', persistProjectSearchSettings\)/);
+});
+
+test('popup and dashboard capture starting project ID before asynchronous worker response', () => {
+  for (const sourceFile of ['popup/popup.js', 'dashboard/dashboard.js']) {
+    const source = read(sourceFile);
+    assert.match(source, /const startedProjectId = activeProject\?\.id \|\| null/);
+    assert.match(source, /saveProjectKeywords\(startedProjectId,/);
+  }
+});
