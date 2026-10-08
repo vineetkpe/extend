@@ -9,6 +9,7 @@
  */
 
 import { matchUrl, MATCH_TYPES, normalizeUrl } from './utils/urlNormalizer.js';
+import { prepareOrganicPage, ORGANIC_COUNTING_POLICY } from './utils/organicRank.js';
 import { calculateChange } from './utils/parser.js';
 import {
   validateCoordinates,
@@ -1370,20 +1371,27 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
       }
 
       if (response.status === 'SUCCESS') {
-        const pageResults = response.results;
+        const prepared = prepareOrganicPage(response.results, seenNormalizedUrls, offset);
+        if (!prepared.ok) {
+          return {
+            resultItem: createKeywordErrorResult(
+              item,
+              'Could not safely count organic positions: ' + prepared.reason
+            ),
+            interrupted: false
+          };
+        }
+        const pageResults = prepared.listings;
         let newUniqueCount = 0;
 
         for (const res of pageResults) {
-          const normCandidate = res.normalizedUrl || normalizeUrl(res.url);
-
-          // Deduplicate against already-seen URLs for this keyword
-          if (!normCandidate || seenNormalizedUrls.has(normCandidate)) {
-            continue;
-          }
-
+          const normCandidate = res.normalizedUrl;
+          if (!seenNormalizedUrls.has(normCandidate)) newUniqueCount++;
           seenNormalizedUrls.add(normCandidate);
-          newUniqueCount++;
 
+          // Ranking positions are the sequence of ORGANIC LISTINGS, not
+          // unique URLs and not AI Overview citations. The parser already
+          // filters all nonorganic modules before they reach this loop.
           const rankPosition = cumulativeResults.length + 1;
           const organicEntry = {
             position: rankPosition,
@@ -1417,6 +1425,9 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
           offset,
           pageResultsCount: pageResults.length,
           newUniqueFoundOnPage: newUniqueCount,
+          repeatedOrganicListings: prepared.repeatedFromPreviousPage,
+          discardedSamePageDuplicates: prepared.skippedDuplicatesOnPage,
+          countingPolicy: ORGANIC_COUNTING_POLICY,
           totalCumulativeCount: cumulativeResults.length,
           exactMatchFound: Boolean(exactMatch),
           otherDomainFound: Boolean(otherDomainMatch)
