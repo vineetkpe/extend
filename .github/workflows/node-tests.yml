@@ -19,3 +19,4 @@ jobs:
           node-version: '22'
       - run: npm install --no-audit --no-fund
       - run: npm test
+      - run: node --check dashboard/dashboard.js && node --check background.js && node --check utils/rankingWorkbook.js && node --check utils/geolocationProof.js
