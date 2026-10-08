@@ -116,7 +116,7 @@
               <button id="btn-clear-location" class="btn btn-outline btn-sm">Reset Location</button>
             </div>
             <div id="location-msg" class="inline-msg"></div>
-            <p class="workbook-location-note">Coordinates simulate browser geolocation only. Google search rankings can still vary by IP address, account, language and personalization. This is not verified Google Maps / GMB position tracking.</p>
+            <p class="workbook-location-note">Valid coordinates are remembered locally until Reset Location. Browser simulation does not change the public IP. Google search rankings can still vary by IP address, account, language and personalization. This is not verified Google Maps / GMB position tracking.</p>
           </div>
         </div>
 
@@ -347,14 +347,14 @@
                 Your SEO data is processed locally in this browser session.
               </p>
               <p style="font-size: 13px; color: #d1d5db;">
-                We do not receive or store your keywords, client domains, rankings, locations, or results.
+                We do not receive your keywords, client domains, rankings, locations, or results. Keyword and client data remain in session memory. To prevent re-entry, only your last valid latitude/longitude/accuracy are saved on this device (chrome.storage.local) until Reset Location is clicked.
                 There is NO backend server, NO cloud database, NO analytics, NO telemetry, and NO error-tracking SDK.
               </p>
               <p style="font-size: 13px; color: #d1d5db;">
                 Google search queries are sent directly to Google when rank checking runs.
               </p>
               <p style="margin-bottom: 0; font-size: 13px; color: #9ca3af;">
-                Session data is cleared when the browser session ends. If you want to keep your project for future sessions, use <strong>Export JSON</strong> to save a file locally on your device.
+                Client projects and ranking data are cleared when the browser session ends. Remembered device coordinates remain until Reset Location, including after Clear Session Data. To keep your project for future sessions, use <strong>Export JSON</strong> to save a file locally on your device.
               </p>
             </div>
             <div style="display: flex; gap: 12px; align-items: center;">
