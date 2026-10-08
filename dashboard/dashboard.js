@@ -172,6 +172,7 @@ const el = {
 
   // Keywords Tab
   keywordsTextarea: document.getElementById('keywords-textarea'),
+  defaultTargetSite: document.getElementById('default-target-site'),
   workbookFile: document.getElementById('workbook-file'),
   workbookDate: document.getElementById('workbook-date'),
   workbookStatus: document.getElementById('workbook-import-status'),
@@ -327,6 +328,7 @@ async function loadActiveProjectIntoUI(proj) {
   el.delaySeconds.value = String(cfg.defaultDelaySeconds || 8);
 
   // Keywords
+  if (el.defaultTargetSite) el.defaultTargetSite.value = cfg.domain || '';
   const keywords = proj.keywords || [];
   renderKeywordsTextarea(keywords);
 }
@@ -364,7 +366,7 @@ function renderKeywordsTextarea(keywords) {
  */
 function parseKeywordsFromTextarea() {
   const text = el.keywordsTextarea.value || '';
-  const { valid } = parseInputRows(text);
+  const { valid } = parseInputRows(text, { defaultTargetUrl: el.defaultTargetSite?.value || '' });
   return valid;
 }
 
@@ -383,7 +385,7 @@ function renderKeywordsPreview() {
     return;
   }
 
-  const { valid, errors } = parseInputRows(text);
+  const { valid, errors } = parseInputRows(text, { defaultTargetUrl: el.defaultTargetSite?.value || '' });
   if (el.keywordCountLabel) {
     el.keywordCountLabel.textContent = `${valid.length} keyword(s) detected${errors.length > 0 ? ` (${errors.length} invalid)` : ''}`;
   }
@@ -1377,6 +1379,16 @@ function setupEventListeners() {
     }
   });
 
+  // A single optional website supports plain keyword-only lists. It belongs to
+  // the session project, not device-persistent settings.
+  el.defaultTargetSite.addEventListener('input', renderKeywordsPreview);
+  el.defaultTargetSite.addEventListener('change', async () => {
+    if (activeProject && !pendingWorkbookUpload) {
+      await updateProject(activeProject.id, { domain: el.defaultTargetSite.value.trim() });
+      activeProject.config.domain = el.defaultTargetSite.value.trim();
+    }
+  });
+
   // Keywords Textarea Live Preview & Input
   el.keywordsTextarea.addEventListener('input', () => {
     renderKeywordsPreview();
@@ -1389,9 +1401,13 @@ function setupEventListeners() {
       showToast('Workbook mode uses the original row mapping. Clear the workbook to edit keywords.', 'error');
       return;
     }
-    const { valid, errors } = parseInputRows(el.keywordsTextarea.value || '');
+    const { valid, errors } = parseInputRows(el.keywordsTextarea.value || '', {
+      defaultTargetUrl: el.defaultTargetSite.value.trim()
+    });
     if (errors.length > 0) {
-      showToast(`Warning: ${errors.length} row(s) could not be understood.`, 'warning');
+      showToast('Fix ' + errors.length + ' invalid keyword row(s) before saving.', 'error');
+      renderKeywordsPreview();
+      return;
     }
     await saveProjectKeywords(activeProject.id, valid);
     activeProject.keywords = valid;
@@ -1438,10 +1454,15 @@ function setupEventListeners() {
     }
     const parsed = importedWorkbook
       ? { valid: importedWorkbook.inspected.rows, errors: [] }
-      : parseInputRows(el.keywordsTextarea.value || '');
+      : parseInputRows(el.keywordsTextarea.value || '', {
+          defaultTargetUrl: el.defaultTargetSite.value.trim()
+        });
     const { valid, errors } = parsed;
     if (errors.length > 0) {
-      showToast(`Warning: ${errors.length} invalid row(s) could not be parsed.`, 'warning');
+      showToast('Fix ' + errors.length + ' invalid keyword row(s) before starting.', 'error');
+      document.querySelector('[data-tab="tab-keywords"]')?.click();
+      renderKeywordsPreview();
+      return;
     }
     if (valid.length === 0) {
       showToast('Please enter at least 1 valid keyword row.', 'error');
