@@ -661,6 +661,14 @@ function validateInput() {
 /**
  * Auto-saves harmless general settings
  */
+function loadProjectSearchSettings(project) {
+  const cfg = project?.config || project;
+  if (!cfg) return;
+  if (googleDomainSelect) googleDomainSelect.value = cfg.googleDomain || 'google.com';
+  if (maxPositionSelect) maxPositionSelect.value = String(cfg.defaultMaxDepth || 50);
+  if (delaySecondsInput) delaySecondsInput.value = String(cfg.defaultDelaySeconds || 8);
+}
+
 function saveCurrentSettings() {
   if (!googleDomainSelect || !delaySecondsInput) return;
   const settings = {
@@ -673,6 +681,17 @@ function saveCurrentSettings() {
     action: 'SAVE_SETTINGS',
     settings: settings
   });
+  if (activeProject) {
+    const projectId = activeProject.id;
+    const updates = {
+      googleDomain: settings.googleDomain,
+      defaultMaxDepth: settings.maxPosition,
+      defaultDelaySeconds: settings.delaySeconds
+    };
+    updateProject(projectId, updates).then(project => {
+      if (activeProject?.id === projectId) activeProject = project;
+    }).catch(error => console.error('[Popup] Could not save project search settings:', error));
+  }
 }
 
 /**
@@ -749,6 +768,7 @@ async function initializeState() {
     if (activeProject) {
       const cfg = activeProject.config || activeProject;
       await restoreLocationFields(activeProject);
+      loadProjectSearchSettings(activeProject);
       if (defaultTargetSiteInput) defaultTargetSiteInput.value = cfg.domain || '';
 
       if (keywordInput) {
@@ -776,9 +796,12 @@ async function initializeState() {
 
     // Apply settings
     if (settings) {
-      if (settings.googleDomain && googleDomainSelect) googleDomainSelect.value = settings.googleDomain;
-      if (settings.maxPosition && maxPositionSelect) maxPositionSelect.value = String(settings.maxPosition);
-      if (settings.delaySeconds && delaySecondsInput) delaySecondsInput.value = settings.delaySeconds;
+      // Per-client config takes precedence over global defaults.
+      if (!activeProject) {
+        if (settings.googleDomain && googleDomainSelect) googleDomainSelect.value = settings.googleDomain;
+        if (settings.maxPosition && maxPositionSelect) maxPositionSelect.value = String(settings.maxPosition);
+        if (settings.delaySeconds && delaySecondsInput) delaySecondsInput.value = settings.delaySeconds;
+      }
       if (debugModeCheckbox) debugModeCheckbox.checked = Boolean(settings.debugMode);
     }
 
@@ -884,12 +907,13 @@ function attachEventListeners() {
       });
     }
 
+    const startedProjectId = activeProject?.id || null;
     try {
       chrome.runtime.sendMessage({
         action: 'START_JOB',
         queue: parsed.valid,
         settings: settings,
-        projectId: activeProject ? activeProject.id : null
+        projectId: startedProjectId
       }, (res) => {
         if (chrome.runtime.lastError) {
           const errMsg = chrome.runtime.lastError.message || 'Background service worker unavailable.';
@@ -899,8 +923,8 @@ function attachEventListeners() {
           return;
         }
         if (res && res.success && res.state) {
-          if (activeProject) {
-            saveProjectKeywords(activeProject.id, parsed.valid).catch(error =>
+          if (startedProjectId) {
+            saveProjectKeywords(startedProjectId, parsed.valid).catch(error =>
               console.error('[Popup] Failed to save accepted keywords:', error)
             );
           }
@@ -1249,6 +1273,7 @@ function attachEventListeners() {
       if (activeProject) {
         const cfg = activeProject.config || activeProject;
         await restoreLocationFields(activeProject);
+        loadProjectSearchSettings(activeProject);
         if (defaultTargetSiteInput) defaultTargetSiteInput.value = cfg.domain || '';
 
         if (keywordInput) {
