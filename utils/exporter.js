@@ -14,7 +14,7 @@ export function neutralizeSpreadsheetFormula(val) {
   if (val === undefined || val === null) return '';
   const str = String(val);
   if (typeof val === 'number' || str.trim() === '-') return str;
-  return /^[\\s\\u0000-\\u001f\\uFEFF]*[=+\\-@]/u.test(str)
+  return /^[\s\u0000-\u001f\uFEFF]*[=+\-@]/u.test(str)
     ? "'" + str : str;
 }
 
