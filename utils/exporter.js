@@ -61,7 +61,7 @@ export function exportToTsv(results) {
     'Keyword',
     'Target URL',
     'Previous Position',
-    'Current Position',
+    'Organic Position',
     'Change',
     'Match Type',
     'Status',
