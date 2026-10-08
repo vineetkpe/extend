@@ -27,13 +27,38 @@
     'dpr'
   ]);
 
-  // Selectors for elements that must be EXCLUDED from organic ranking
+  // Rank only standalone organic web listings, not "universal"/SERP modules.
+  // These selectors are intentionally applied to the heading's ancestors:
+  // links cited INSIDE an AI Overview or news carousel are NOT organic ranks.
+  // Keep this list narrow enough to retain legitimate standalone web listings.
   const EXCLUDED_SELECTORS = [
+    // AI Overviews / AI-generated answer cards and their citation links
+    '#m-x-content',
+    '#m-x-root',
+    '#ai-overview',
+    '#aic',
+    '.M8OgIe',
+    '[data-testid="ai-overview"]',
+    '[data-module-type="ai-overview"]',
+    '[data-attrid*="generative"]',
+    '[data-attrid*="ai_overview"]',
+    '[data-attrid*="ai-overview"]',
+    '[aria-label*="AI Overview"]',
+    '[aria-label*="AI overview"]',
+    '[aria-label*="AI-generated"]',
+    // Non-result page areas
+    '#rhs',
+    '#taw',
+    '#botstuff',
+    '[aria-hidden="true"]',
+    '[hidden]',
     '#tads',
     '#bottomads',
     '[data-text-ad]',
     '[aria-label="Ads"]',
     '[aria-label="Sponsored"]',
+    '[aria-label*="Sponsored"]',
+    '[aria-label*="Advertisement"]',
     '.uEierd',
     '[data-ad-slot]',
     '.commercial-unit-desktop-top',
@@ -44,6 +69,9 @@
     '[data-local-attribute]',
     'div[data-entityid*="local"]',
     '.rllt__link',
+    '[aria-label*="Places"]',
+    '[aria-label*="Local results"]',
+    '[data-attrid*="local_pack"]',
     // People Also Ask / Related Questions
     '.related-question-pair',
     'div[data-initq]',
@@ -51,10 +79,30 @@
     'div.cbp4De',
     '.exp-c',
     'div[jscontroller="ABbfub"]',
+    '[aria-label*="People also ask"]',
+    '[aria-label*="People Also Ask"]',
+    '[aria-label*="Related questions"]',
+    '[data-attrid*="people_also_ask"]',
     // Image, Video, News Carousels
     'g-scrolling-carousel',
     'g-section-with-header',
     'video-voyager',
+    '#videobox',
+    '#imagebox_bigimages',
+    '[aria-label*="Top stories"]',
+    '[aria-label*="Top Stories"]',
+    '[aria-label*="Short videos"]',
+    '[aria-label*="Videos"]',
+    '[aria-label*="Images"]',
+    '[aria-label*="Discussions and forums"]',
+    '[aria-label*="Perspectives"]',
+    '[aria-label*="Things to know"]',
+    '[aria-label*="Popular products"]',
+    '[aria-label*="Shopping"]',
+    '[aria-label*="Related searches"]',
+    '[aria-label*="What people are saying"]',
+    '[data-attrid*="top_stories"]',
+    '[data-attrid*="short_video"]',
     'div[data-attrid*="image"]',
     'div[data-attrid*="video"]',
     'div[data-attrid*="news"]',
@@ -62,6 +110,8 @@
     'div.ou4Vhd',
     // Shopping / Knowledge Panels
     '#kp-wp-tab-overview',
+    '#rhs',
+    '[data-attrid*="knowledge"]',
     '.cu-container',
     'div[data-attrid*="shopping"]',
     // Sitelinks containers (to avoid counting sub-links as independent rankings)
@@ -70,6 +120,9 @@
     'div.usJj9c',
     'div.MSLdpb',
     'ul.sitelinks',
+    '[data-testid="sitelinks"]',
+    '[aria-label*="Sitelinks"]',
+    '[aria-label*="Site links"]',
     'div[data-hveid*="sitelink"]'
   ];
 
@@ -77,7 +130,9 @@
   // containing the string "google" (or organic YouTube results).
   const GOOGLE_SEARCH_DOMAINS = [
     'google.com', 'google.co.uk', 'google.co.in', 'google.com.au',
-    'google.ca', 'google.de', 'google.fr'
+    'google.ca', 'google.de', 'google.fr', 'google.es', 'google.it',
+    'google.co.nz', 'google.ie', 'google.com.sg', 'google.com.mx',
+    'google.com.br'
   ];
   const GOOGLE_SERVICE_PREFIXES = [
     'accounts.google.', 'support.google.', 'maps.google.',
@@ -217,6 +272,7 @@
   function parseOrganicHeadings(rootDoc, debugInfo) {
     const results = [];
     const seenNormalized = new Set();
+    const countedResultContainers = new Set();
     // Never scan the whole document as a fallback: unrelated headings in the
     // header, sidebar and footer must not count as organic rankings.
     const root = rootDoc.querySelector('#rso') || rootDoc.querySelector('#search');
@@ -230,6 +286,14 @@
     for (const heading of headings) {
       if (isInsideExcluded(heading)) {
         debugInfo.skippedExcluded++;
+        continue;
+      }
+      // A traditional .g web-result block has ONE primary organic listing.
+      // Its extra h3 headings (unknown sitelink designs, related links) must
+      // not create extra organic ranks even if they point to a different URL.
+      const resultContainer = heading.closest('.g');
+      if (resultContainer && countedResultContainers.has(resultContainer)) {
+        debugInfo.skippedSecondaryLinks++;
         continue;
       }
       const anchor = heading.closest('a') || heading.querySelector('a');
@@ -248,6 +312,7 @@
         continue;
       }
       seenNormalized.add(normalizedUrl);
+      if (resultContainer) countedResultContainers.add(resultContainer);
       results.push({
         position: results.length + 1,
         url: destination,
@@ -277,6 +342,8 @@
       skippedSitelinks: 0,
       skippedInternal: 0,
       skippedDuplicates: 0,
+      skippedSecondaryLinks: 0,
+      countingPolicy: 'strict-organic-web-v1',
       strategyUsed: 'headings-dom-order'
     };
 
