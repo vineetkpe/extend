@@ -73,24 +73,15 @@
     'div[data-hveid*="sitelink"]'
   ];
 
-  // Domains or paths to ignore (Google internal)
-  const IGNORED_DOMAINS = [
-    'google.com',
-    'google.co.uk',
-    'google.co.in',
-    'google.com.au',
-    'google.ca',
-    'google.de',
-    'google.fr',
-    'accounts.google.',
-    'support.google.',
-    'maps.google.',
-    'news.google.',
-    'translate.google.',
-    'webcache.googleusercontent.com',
-    'policies.google.',
-    'www.blogger.com',
-    'youtube.com'
+  // Only filter internal links on genuine Google hosts, not third-party URLs
+  // containing the string "google" (or organic YouTube results).
+  const GOOGLE_SEARCH_DOMAINS = [
+    'google.com', 'google.co.uk', 'google.co.in', 'google.com.au',
+    'google.ca', 'google.de', 'google.fr'
+  ];
+  const GOOGLE_SERVICE_PREFIXES = [
+    'accounts.google.', 'support.google.', 'maps.google.',
+    'news.google.', 'translate.google.', 'policies.google.'
   ];
 
   /**
@@ -107,60 +98,55 @@
   }
 
   /**
-   * Decodes Google redirect wrappers (/url?q=... or /url?url=...)
+   * Unwraps Google's /url?q= redirect only when it actually comes from Google.
+   * Rejects unresolvable redirects rather than accidentally ranking google.com.
    */
   function cleanUrl(href) {
     if (!href || typeof href !== 'string') return null;
     const trimmed = href.trim();
-
-    if (trimmed.startsWith('/url?') || trimmed.startsWith('https://www.google.') || trimmed.includes('/url?')) {
-      try {
-        const parsed = new URL(trimmed.startsWith('http') ? trimmed : `https://www.google.com${trimmed}`);
-        const dest = parsed.searchParams.get('q') || parsed.searchParams.get('url');
-        if (dest && /^https?:\/\//i.test(dest)) {
-          return dest;
-        }
-      } catch (_) {
-        const match = trimmed.match(/[?&](?:q|url)=(https?%3A%2F%2F[^&]+|https?:\/\/[^&]+)/i);
-        if (match && match[1]) {
-          try {
-            return decodeURIComponent(match[1]);
-          } catch (e) {
-            return match[1];
-          }
-        }
+    try {
+      const relativeRedirect = trimmed.startsWith('/url?');
+      if (!relativeRedirect && !/^https?:\/\//i.test(trimmed)) return null;
+      const parsed = new URL(trimmed, relativeRedirect ? 'https://www.google.com' : undefined);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+      const hostname = parsed.hostname.toLowerCase();
+      const isSearchHost = GOOGLE_SEARCH_DOMAINS.some(domain =>
+        hostname === domain || hostname === `www.${domain}`
+      );
+      if (parsed.pathname === '/url' && (relativeRedirect || isSearchHost)) {
+        const destination = parsed.searchParams.get('q') || parsed.searchParams.get('url');
+        if (!destination || !/^https?:\/\//i.test(destination)) return null;
+        const resolved = new URL(destination);
+        return ['http:', 'https:'].includes(resolved.protocol) ? resolved.href : null;
       }
+      return parsed.href;
+    } catch (_) {
+      return null;
     }
-
-    if (/^https?:\/\//i.test(trimmed)) {
-      return trimmed;
-    }
-
-    return null;
   }
 
   /**
-   * Checks if a URL belongs to Google or is non-organic internal navigation
+   * Excludes Google navigation/challenge links without suppressing legitimate
+   * third-party organic results such as YouTube videos.
    */
   function isGoogleInternal(url) {
     if (!url) return true;
     try {
       const parsed = new URL(url);
       const host = parsed.hostname.toLowerCase();
-      for (const ign of IGNORED_DOMAINS) {
-        if (host === ign || host.endsWith('.' + ign) || host.includes(ign)) {
-          if (host.includes('google.') && (parsed.pathname.startsWith('/search') || parsed.pathname.startsWith('/preferences') || parsed.pathname === '/')) {
-            return true;
-          }
-          if (host.includes('accounts.google') || host.includes('support.google') || host.includes('maps.google') || host.includes('policies.google')) {
-            return true;
-          }
-        }
+      if (GOOGLE_SERVICE_PREFIXES.some(prefix => host.startsWith(prefix))) {
+        return true;
       }
+      const searchHost = GOOGLE_SEARCH_DOMAINS.some(domain =>
+        host === domain || host === `www.${domain}`
+      );
+      if (!searchHost) return false;
+      return parsed.pathname === '/' ||
+        ['/search', '/url', '/preferences', '/sorry', '/advanced_search']
+          .some(path => parsed.pathname === path || parsed.pathname.startsWith(path + '/'));
     } catch (_) {
       return true;
     }
-    return false;
   }
 
   /**
@@ -169,10 +155,12 @@
    */
   function normalizeUrl(rawUrl) {
     if (!rawUrl || typeof rawUrl !== 'string') return '';
-    let cleaned = cleanUrl(rawUrl.trim());
-    if (!/^https?:\/\//i.test(cleaned)) {
-      cleaned = 'https://' + cleaned;
-    }
+    const trimmed = rawUrl.trim();
+    // Normalization also supports plain domain/path inputs from manual checks.
+    const candidate = /^https?:\/\//i.test(trimmed) ? trimmed
+      : (/^[a-z0-9.-]+(?:\/|$)/i.test(trimmed) ? 'https://' + trimmed : '');
+    const cleaned = cleanUrl(candidate);
+    if (!cleaned) return '';
 
     try {
       const parsed = new URL(cleaned);
@@ -181,11 +169,9 @@
         hostname = hostname.slice(4);
       }
 
+      // Paths may be case-sensitive. Preserve their escaped representation too:
+      // /a%2Fb is not necessarily the same resource as /a/b.
       let pathname = parsed.pathname;
-      try {
-        pathname = decodeURIComponent(pathname);
-      } catch (_) {}
-      pathname = pathname.toLowerCase();
       if (pathname.length > 1 && pathname.endsWith('/')) {
         pathname = pathname.slice(0, -1);
       }
@@ -219,8 +205,11 @@
         .replace(/^www\./i, '')
         .split('#')[0]
         .split('?')[0]
-        .trim()
-        .toLowerCase();
+        .trim();
+      // Never silently fold case-sensitive path segments in the fallback.
+      const slash = fallback.indexOf('/');
+      fallback = slash < 0 ? fallback.toLowerCase()
+        : fallback.slice(0, slash).toLowerCase() + fallback.slice(slash);
       if (fallback.endsWith('/')) {
         fallback = fallback.slice(0, -1);
       }
@@ -229,122 +218,52 @@
   }
 
   /**
-   * Strategy 1: Find candidate organic result blocks in #rso or #search
+   * Single DOM-order pass over title links. The previous container-first strategy
+   * only considered the headings fallback if it found ZERO results, which silently
+   * missed valid results in mixed Google layouts. It also selected the first h3
+   * from outer wrapper containers that may contain multiple results.
    */
-  function parseWithContainers(rootDoc, debugInfo) {
+  function parseOrganicHeadings(rootDoc, debugInfo) {
     const results = [];
     const seenNormalized = new Set();
+    // Never scan the whole document as a fallback: unrelated headings in the
+    // header, sidebar and footer must not count as organic rankings.
+    const root = rootDoc.querySelector('#rso') || rootDoc.querySelector('#search');
+    if (!root) {
+      debugInfo.missingResultsRoot = true;
+      return results;
+    }
 
-    const searchRoot = rootDoc.querySelector('#rso') || rootDoc.querySelector('#search') || rootDoc.body;
-    if (!searchRoot) return results;
-
-    const containerSelectors = [
-      'div.MjjYud',
-      'div.g',
-      'div.tF2Cxc',
-      'div[data-sokoban-container]'
-    ];
-
-    const containers = searchRoot.querySelectorAll(containerSelectors.join(', '));
-    debugInfo.containersFound = containers.length;
-
-    containers.forEach(container => {
-      // Must not be inside ads, local pack, PAA, carousels
-      if (isInsideExcluded(container)) {
+    const headings = root.querySelectorAll('h3');
+    debugInfo.headingsFound = headings.length;
+    for (const heading of headings) {
+      if (isInsideExcluded(heading)) {
         debugInfo.skippedExcluded++;
-        return;
+        continue;
       }
-
-      // Find the main title heading (h3) inside this result
-      const h3 = container.querySelector('h3');
-      if (!h3) return;
-
-      if (isInsideExcluded(h3)) {
+      const anchor = heading.closest('a') || heading.querySelector('a');
+      if (!anchor || isInsideExcluded(anchor)) {
         debugInfo.skippedExcluded++;
-        return;
+        continue;
       }
-
-      // Find associated anchor
-      const anchor = h3.closest('a') || container.querySelector('a:has(h3)') || container.querySelector('a');
-      if (!anchor || !anchor.href) return;
-
-      // Reject sitelinks inside this container
-      if (anchor.closest('table.jmvtTe') || anchor.closest('div.HiHjCd') || anchor.closest('div.usJj9c') || anchor.closest('div.MSLdpb')) {
-        debugInfo.skippedSitelinks++;
-        return;
-      }
-
-      const rawUrl = cleanUrl(anchor.href);
-      if (!rawUrl || isGoogleInternal(rawUrl)) {
+      const destination = cleanUrl(anchor.href);
+      if (!destination || isGoogleInternal(destination)) {
         debugInfo.skippedInternal++;
-        return;
+        continue;
       }
-
-      const norm = normalizeUrl(rawUrl);
-      if (!norm || seenNormalized.has(norm)) {
+      const normalizedUrl = normalizeUrl(destination);
+      if (!normalizedUrl || seenNormalized.has(normalizedUrl)) {
         debugInfo.skippedDuplicates++;
-        return;
+        continue;
       }
-
-      seenNormalized.add(norm);
+      seenNormalized.add(normalizedUrl);
       results.push({
         position: results.length + 1,
-        url: rawUrl,
-        title: (h3.textContent || '').trim(),
-        normalizedUrl: norm
+        url: destination,
+        title: (heading.textContent || '').trim(),
+        normalizedUrl
       });
-    });
-
-    return results;
-  }
-
-  /**
-   * Strategy 2: Scan all h3 headings inside #rso if Strategy 1 found 0 results
-   */
-  function parseWithHeadings(rootDoc, debugInfo) {
-    const results = [];
-    const seenNormalized = new Set();
-
-    const searchRoot = rootDoc.querySelector('#rso') || rootDoc.querySelector('#search') || rootDoc.body;
-    if (!searchRoot) return results;
-
-    const allH3 = searchRoot.querySelectorAll('h3');
-
-    allH3.forEach(h3 => {
-      if (isInsideExcluded(h3)) {
-        debugInfo.skippedExcluded++;
-        return;
-      }
-
-      const anchor = h3.closest('a') || h3.querySelector('a');
-      if (!anchor || !anchor.href) return;
-
-      if (anchor.closest('table.jmvtTe') || anchor.closest('div.HiHjCd') || anchor.closest('div.usJj9c') || anchor.closest('div.MSLdpb')) {
-        debugInfo.skippedSitelinks++;
-        return;
-      }
-
-      const rawUrl = cleanUrl(anchor.href);
-      if (!rawUrl || isGoogleInternal(rawUrl)) {
-        debugInfo.skippedInternal++;
-        return;
-      }
-
-      const norm = normalizeUrl(rawUrl);
-      if (!norm || seenNormalized.has(norm)) {
-        debugInfo.skippedDuplicates++;
-        return;
-      }
-
-      seenNormalized.add(norm);
-      results.push({
-        position: results.length + 1,
-        url: rawUrl,
-        title: (h3.textContent || '').trim(),
-        normalizedUrl: norm
-      });
-    });
-
+    }
     return results;
   }
 
@@ -361,22 +280,16 @@
     const startOffset = options.startOffset || 0;
 
     const debugInfo = {
-      containersFound: 0,
+      headingsFound: 0,
+      missingResultsRoot: false,
       skippedExcluded: 0,
       skippedSitelinks: 0,
       skippedInternal: 0,
       skippedDuplicates: 0,
-      strategyUsed: 'containers'
+      strategyUsed: 'headings-dom-order'
     };
 
-    // Try Strategy 1 first
-    let results = parseWithContainers(rootDoc, debugInfo);
-
-    // If Strategy 1 yielded 0 results, fall back to Strategy 2
-    if (!results || results.length === 0) {
-      debugInfo.strategyUsed = 'headings';
-      results = parseWithHeadings(rootDoc, debugInfo);
-    }
+    const results = parseOrganicHeadings(rootDoc, debugInfo);
 
     // Re-index positions sequentially 1..N
     results.forEach((item, idx) => {
