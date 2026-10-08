@@ -168,6 +168,8 @@
       if (hostname.startsWith('www.')) {
         hostname = hostname.slice(4);
       }
+      // Keep non-default ports so deduplication matches the background matcher.
+      if (parsed.port) hostname += ':' + parsed.port;
 
       // Paths may be case-sensitive. Preserve their escaped representation too:
       // /a%2Fb is not necessarily the same resource as /a/b.
@@ -184,7 +186,8 @@
       for (const [key, value] of searchParams.entries()) {
         const lowerKey = key.toLowerCase();
         if (!TRACKING_PARAMS.has(lowerKey) && !lowerKey.startsWith('utm_')) {
-          retainedParams.push([lowerKey, value.trim()]);
+          // Parameter names and values can be significant to the server.
+          retainedParams.push([key, value]);
         }
       }
       retainedParams.sort((a, b) => a[0].localeCompare(b[0]));
@@ -200,20 +203,8 @@
 
       return `${hostname}${pathname}${queryString}`;
     } catch (_) {
-      let fallback = cleaned
-        .replace(/^https?:\/\//i, '')
-        .replace(/^www\./i, '')
-        .split('#')[0]
-        .split('?')[0]
-        .trim();
-      // Never silently fold case-sensitive path segments in the fallback.
-      const slash = fallback.indexOf('/');
-      fallback = slash < 0 ? fallback.toLowerCase()
-        : fallback.slice(0, slash).toLowerCase() + fallback.slice(slash);
-      if (fallback.endsWith('/')) {
-        fallback = fallback.slice(0, -1);
-      }
-      return fallback;
+      // Never guess a result identity from a URL that cannot be parsed.
+      return '';
     }
   }
 
