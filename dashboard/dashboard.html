@@ -286,14 +286,27 @@
         <!-- TAB 2: Keyword Input Area -->
         <div class="tab-pane" id="tab-keywords">
           <div class="workbook-import-panel">
-            <h4>Import Your SEO Ranking Workbook (.xlsx)</h4>
-            <p>Reads <strong>Keyword Ranking</strong> automatically, including target landing pages and previous weekly ranks. Coordinates are read from <strong>Client Information</strong>. All other tabs, including GMB Ranking, are retained without new rank values.</p>
+            <h4>Import Any Website Ranking Workbook (.xlsx)</h4>
+            <p>Detects keyword and website URL columns across worksheets. Choose or adjust column mappings for different SEO clients and spreadsheet formats. Previous weekly rankings are optional. Other sheets stay unchanged; Google Maps/GMB ranking is a separate check.</p>
             <div class="workbook-import-controls">
               <label class="workbook-file-label" for="workbook-file">Select your existing Excel workbook</label>
               <input id="workbook-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
               <label class="workbook-file-label" for="workbook-date">New ranking date</label>
               <input id="workbook-date" type="date">
               <button id="btn-clear-workbook" class="btn btn-secondary btn-sm" type="button" disabled>Return to Manual Input</button>
+            </div>
+            <div class="workbook-import-controls" style="margin-top: 10px">
+              <label class="workbook-file-label" for="workbook-sheet">Ranking worksheet</label>
+              <select id="workbook-sheet" aria-label="Ranking worksheet"></select>
+              <label class="workbook-file-label" for="workbook-header-row">Header row</label>
+              <input id="workbook-header-row" type="number" min="1" max="10000" placeholder="Auto" title="Optional header row, e.g. 1 or 9">
+              <label class="workbook-file-label" for="workbook-keyword-col">Keyword col</label>
+              <input id="workbook-keyword-col" type="text" maxlength="3" placeholder="Auto (A)">
+              <label class="workbook-file-label" for="workbook-url-col">Website URL col</label>
+              <input id="workbook-url-col" type="text" maxlength="3" placeholder="Auto (B)">
+              <label class="workbook-file-label" for="workbook-baseline-col">Previous rank col</label>
+              <input id="workbook-baseline-col" type="text" maxlength="3" placeholder="Auto">
+              <button id="btn-apply-workbook-map" class="btn btn-primary btn-sm" type="button" disabled>Load with This Mapping</button>
             </div>
             <p id="workbook-import-status" class="workbook-import-status" role="status">No workbook loaded. Importing a workbook keeps its raw contents only in this dashboard's memory; nothing is uploaded to a server.</p>
           </div>

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { WorkbookZip } from '../utils/workbookZip.js';
-import { inspectRankingWorkbook, buildUpdatedRankingWorkbook } from '../utils/rankingWorkbook.js';
+import { listRankingWorkbookSheets, inspectRankingWorkbook, buildUpdatedRankingWorkbook } from '../utils/rankingWorkbook.js';
 
 globalThis.DOMParser = DOMParser;
 globalThis.XMLSerializer = XMLSerializer;
@@ -206,4 +206,81 @@ test('reads real XLSX-style raw-deflate ZIP entries and keeps them valid after e
   assert.match(xml, /r="G10"/);
   assert.equal(exported.entries.get(part).method, 0);
   assert.equal(td.decode(await exported.read('xl/worksheets/sheet3.xml')), files['xl/worksheets/sheet3.xml']);
+});
+
+test('generic website workbook with custom sheet names and common SEO headers auto-imports', async () => {
+  const files = fixtureFiles();
+  files['xl/workbook.xml'] = files['xl/workbook.xml']
+    .replace('Keyword Ranking', 'Agency Report')
+    .replace('Client Information', 'Other Notes')
+    .replace('GMB Ranking', 'Marketing');
+  files['xl/sharedStrings.xml'] = files['xl/sharedStrings.xml']
+    .replace('<t>Keywords</t>', '<t>Search Term</t>')
+    .replace('<t>Landing Page</t>', '<t>Website</t>');
+  const bytes = zipStored(files);
+  const sheets = await listRankingWorkbookSheets(bytes);
+  assert.deepEqual(sheets, ['Other Notes', 'Agency Report', 'Marketing']);
+  const inspected = await inspectRankingWorkbook(bytes);
+  assert.equal(inspected.sheetName, 'Agency Report');
+  assert.equal(inspected.rows.length, 2);
+  assert.equal(inspected.location.hasCoordinates, false);
+  assert.equal(inspected.hasGmbSheet, false);
+  assert.equal(inspected.rows[0].keyword, 'dryer vent cleaning');
+
+  const output = await buildUpdatedRankingWorkbook(bytes, inspected,
+    [{ id: 'workbook_row_10', currentPosition: 7, status: 'EXACT PAGE' }], '2026-10-08');
+  const zip = new WorkbookZip(await output.arrayBuffer());
+  const doc = new DOMParser().parseFromString(td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G10')), '7');
+  assert.equal(td.decode(await zip.read('xl/worksheets/sheet1.xml')), files['xl/worksheets/sheet1.xml']);
+});
+
+test('manual worksheet and column mapping supports nonstandard header labels', async () => {
+  const files = fixtureFiles();
+  files['xl/workbook.xml'] = files['xl/workbook.xml'].replace('Keyword Ranking', 'Custom Client Site');
+  files['xl/sharedStrings.xml'] = files['xl/sharedStrings.xml']
+    .replace('<t>Keywords</t>', '<t>What people search for</t>')
+    .replace('<t>Landing Page</t>', '<t>Page to track</t>');
+  const bytes = zipStored(files);
+  await assert.rejects(() => inspectRankingWorkbook(bytes), /choose/i);
+  const inspected = await inspectRankingWorkbook(bytes, {
+    sheetName: 'Custom Client Site',
+    headerRow: 9,
+    keywordColumn: 3,
+    urlColumn: 6
+  });
+  assert.equal(inspected.sheetName, 'Custom Client Site');
+  assert.equal(inspected.rows.length, 2);
+  assert.deepEqual(inspected.rows.map(item => item.previousPosition), [4, '-']);
+});
+
+test('a new website workbook with no historical ranking dates accepts its first check', async () => {
+  const files = fixtureFiles();
+  files['xl/workbook.xml'] = files['xl/workbook.xml']
+    .replace('Keyword Ranking', 'Site Keywords').replace('Client Information', 'Not Client Data');
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace(/<c r="G2"[^>]*><v>46300<\/v><\/c>/, '')
+    .replace(/<c r="H2"[^>]*><v>46293<\/v><\/c>/, '')
+    .replace(/<c r="G9"[^>]*><v>46300<\/v><\/c>/, '')
+    .replace(/<c r="H9"[^>]*><v>46293<\/v><\/c>/, '');
+  const bytes = zipStored(files);
+  const inspected = await inspectRankingWorkbook(bytes);
+  assert.equal(inspected.latestDate, null);
+  assert.equal(inspected.header.latestColumn, null);
+  assert.equal(inspected.header.firstRankColumn, 7);
+  assert.deepEqual(inspected.rows.map(item => item.previousPosition), ['-', '-']);
+  const output = await buildUpdatedRankingWorkbook(bytes, inspected,
+    [{ id: 'workbook_row_10', status: 'EXACT PAGE', currentPosition: 1 }], '2026-10-08');
+  const zip = new WorkbookZip(await output.arrayBuffer());
+  const doc = new DOMParser().parseFromString(td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G9')), '46303');
+  assert.equal(cellValue(c(doc, 'G10')), '1');
+});
+
+test('selecting a worksheet without ranking columns fails clearly', async () => {
+  const { bytes } = await fixture();
+  await assert.rejects(
+    () => inspectRankingWorkbook(bytes, { sheetName: 'GMB Ranking' }),
+    /keyword and website URL columns/i
+  );
 });

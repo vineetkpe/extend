@@ -4,6 +4,7 @@
  * No workbook bytes leave the browser or enter chrome.storage.*.
  */
 import { WorkbookZip } from './workbookZip.js';
+import { isValidTargetUrl } from './urlNormalizer.js';
 
 const MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -76,34 +77,53 @@ async function sharedStringsFor(zip) {
   const doc = await readXml(zip, 'xl/sharedStrings.xml');
   return allElements(doc, 'si').map(si => allElements(si, 't').map(t => t.textContent).join(''));
 }
-function getHeaderMapping(sheet, strings) {
+const KEYWORD_HEADERS = new Set(['keyword', 'keywords', 'search term', 'search terms', 'search query', 'query', 'target keyword', 'target keywords']);
+const URL_HEADERS = new Set(['landing page', 'landing page url', 'target url', 'target page', 'page url', 'website url', 'site url', 'url', 'website', 'domain', 'target domain', 'web page']);
+
+function dateSerialForCell(value) {
+  if (typeof value === 'number' && value > 40000 && value < 80000) return value;
+  if (typeof value !== 'string') return null;
+  const cleaned = value.trim();
+  let parsed = null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) parsed = Date.parse(cleaned + 'T00:00:00Z');
+  else if (/^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(cleaned)) {
+    const [a, b, year] = cleaned.split(/[/-]/).map(Number);
+    parsed = Date.UTC(year, a - 1, b);
+  }
+  return Number.isFinite(parsed) ? Math.floor(parsed / 86400000) + 25569 : null;
+}
+
+function getHeaderMapping(sheet, strings, mapping = {}) {
   const rows = allElements(sheet, 'row');
   for (const row of rows) {
+    const rowNumber = Number(row.getAttribute('r'));
+    if (mapping.headerRow && Number(mapping.headerRow) !== rowNumber) continue;
     const byColumn = cellsByColumn(row);
-    let keywordColumn = 0, urlColumn = 0;
+    let keywordColumn = Number(mapping.keywordColumn) || 0;
+    let urlColumn = Number(mapping.urlColumn) || 0;
     for (const [column, cell] of byColumn) {
-      const val = String(cellValue(cell, strings) ?? '').trim().toLowerCase();
-      if (val === 'keywords' || val === 'keyword') keywordColumn = column;
-      if (val === 'landing page' || val === 'target url') urlColumn = column;
+      const value = String(cellValue(cell, strings) ?? '').trim().toLowerCase();
+      if (!keywordColumn && KEYWORD_HEADERS.has(value)) keywordColumn = column;
+      if (!urlColumn && URL_HEADERS.has(value)) urlColumn = column;
     }
-    if (!keywordColumn || !urlColumn) continue;
+    if (!keywordColumn || !urlColumn || keywordColumn === urlColumn) continue;
     const dates = Array.from(byColumn, ([column, cell]) => ({
-      column, date: cellValue(cell, strings)
-    })).filter(item => item.column > urlColumn &&
-      typeof item.date === 'number' && item.date > 40000 && item.date < 70000);
-    if (!dates.length) throw new Error('Keyword Ranking has no dated ranking-history columns.');
-    dates.sort((a, b) => b.date - a.date);
-    const latest = dates[0];
+      column, serial: dateSerialForCell(cellValue(cell, strings))
+    })).filter(item => item.column > Math.max(keywordColumn, urlColumn) &&
+      item.serial !== null);
+    const latest = dates.length ? dates.reduce((prev, cur) => cur.serial > prev.serial ? cur : prev) : null;
+    const firstRankColumn = dates.length ? Math.min(...dates.map(d => d.column)) : Math.max(keywordColumn, urlColumn) + 1;
+    const override = Number(mapping.baselineColumn);
     return {
-      headerRow: Number(row.getAttribute('r')),
+      headerRow: rowNumber,
       keywordColumn,
       urlColumn,
-      firstRankColumn: Math.min(...dates.map(d => d.column)),
-      latestColumn: latest.column,
-      latestDateSerial: latest.date
+      firstRankColumn,
+      latestColumn: override > 0 ? override : (latest?.column ?? null),
+      latestDateSerial: latest?.serial ?? null
     };
   }
-  throw new Error('Could not find Keywords and Landing Page headers in the Keyword Ranking tab.');
+  throw new Error('Unable to detect keyword and website URL columns. Choose the worksheet and map the two columns.');
 }
 function excelSerial(dateString) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateString)) throw new Error('Select a valid YYYY-MM-DD ranking date.');
@@ -142,17 +162,48 @@ function normalizePrevious(value) {
 }
 
 /**
+ * Return worksheet names for a completely arbitrary SEO workbook. Users can
+ * choose the keyword sheet and override header row/column mapping as needed.
+ */
+export async function listRankingWorkbookSheets(bytes) {
+  const zip = new WorkbookZip(bytes);
+  const workbook = await readXml(zip, 'xl/workbook.xml');
+  return allElements(workbook, 'sheet').map(sheet => sheet.getAttribute('name'));
+}
+
+/**
  * Returns per-row queue entries plus only the workbook metadata needed for
  * updating a later export. Does not store/return unrelated tabs or client data.
  */
-export async function inspectRankingWorkbook(bytes) {
+export async function inspectRankingWorkbook(bytes, options = {}) {
   const zip = new WorkbookZip(bytes);
   const workbook = await readXml(zip, 'xl/workbook.xml');
   const rels = await readXml(zip, 'xl/_rels/workbook.xml.rels');
   const strings = await sharedStringsFor(zip);
-  const organicPath = sheetPath(workbook, rels, 'Keyword Ranking');
-  const organic = await readXml(zip, organicPath);
-  const header = getHeaderMapping(organic, strings);
+  const sheets = allElements(workbook, 'sheet').map(sheet => sheet.getAttribute('name'));
+  const desiredSheet = options.sheetName || null;
+  let organicPath = null, header = null, selectedSheet = null, organic = null;
+  const searchSheets = desiredSheet ? [desiredSheet]
+    : (sheets.includes('Keyword Ranking')
+      ? ['Keyword Ranking', ...sheets.filter(name => name !== 'Keyword Ranking')]
+      : sheets);
+  for (const name of searchSheets) {
+    const path = sheetPath(workbook, rels, name);
+    const doc = await readXml(zip, path);
+    try {
+      const candidate = getHeaderMapping(doc, strings, options);
+      organicPath = path;
+      organic = doc;
+      header = candidate;
+      selectedSheet = name;
+      break;
+    } catch (error) {
+      if (desiredSheet) throw error;
+    }
+  }
+  if (!organic || !header) {
+    throw new Error('No worksheet had recognizable keyword and URL headers. Choose a worksheet and map its columns.');
+  }
   const rows = [];
   for (const row of allElements(organic, 'row')) {
     const rowNumber = Number(row.getAttribute('r'));
@@ -160,8 +211,9 @@ export async function inspectRankingWorkbook(bytes) {
     const cells = cellsByColumn(row);
     const keyword = String(cellValue(cells.get(header.keywordColumn), strings) ?? '').trim();
     const url = String(cellValue(cells.get(header.urlColumn), strings) ?? '').trim();
-    if (!keyword || !url || !/^https?:\/\//i.test(url)) continue;
-    const previousPosition = normalizePrevious(cellValue(cells.get(header.latestColumn), strings));
+    if (!keyword || !url || !isValidTargetUrl(url)) continue;
+    const previousPosition = normalizePrevious(header.latestColumn
+      ? cellValue(cells.get(header.latestColumn), strings) : null);
     rows.push({
       id: 'workbook_row_' + rowNumber,
       originalIndex: rows.length,
@@ -172,9 +224,12 @@ export async function inspectRankingWorkbook(bytes) {
     });
   }
   if (!rows.length) throw new Error('No keyword + landing-page pairs were found.');
-  const clientPath = sheetPath(workbook, rels, 'Client Information');
-  const clientDoc = await readXml(zip, clientPath);
-  const location = getClientLocation(clientDoc, strings);
+  let location = { locationName: '', latitude: '', longitude: '', hasCoordinates: false };
+  if (sheets.includes('Client Information')) {
+    const clientPath = sheetPath(workbook, rels, 'Client Information');
+    const clientDoc = await readXml(zip, clientPath);
+    location = getClientLocation(clientDoc, strings);
+  }
   const hasGmbSheet = allElements(workbook, 'sheet').some(
     node => node.getAttribute('name') === 'GMB Ranking'
   );
@@ -182,9 +237,11 @@ export async function inspectRankingWorkbook(bytes) {
     rows,
     location,
     hasGmbSheet,
-    latestDate: excelDate(header.latestDateSerial),
+    latestDate: header.latestDateSerial ? excelDate(header.latestDateSerial) : null,
     latestDateSerial: header.latestDateSerial,
     organicSheet: organicPath,
+    sheetName: selectedSheet,
+    sheetNames: sheets,
     header
   };
 }
@@ -267,7 +324,7 @@ function rankingValue(result) {
  */
 export async function buildUpdatedRankingWorkbook(bytes, inspected, results, asOfDate) {
   const dateValue = excelSerial(asOfDate);
-  if (dateValue <= inspected.latestDateSerial) {
+  if (inspected.latestDateSerial && dateValue <= inspected.latestDateSerial) {
     throw new Error('The new check date must be later than the latest existing ranking date (' + inspected.latestDate + ').');
   }
   const zip = new WorkbookZip(bytes);
