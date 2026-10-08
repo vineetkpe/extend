@@ -4,6 +4,12 @@
  * history, the Google result-page location footer, or Google Maps ranking.
  */
 export function verifyCoordinatesReported(expected, reported, tolerance = 0.0001) {
+  if (reported?.latitude === undefined || reported?.latitude === null ||
+      reported?.longitude === undefined || reported?.longitude === null ||
+      expected?.latitude === undefined || expected?.latitude === null ||
+      expected?.longitude === undefined || expected?.longitude === null) {
+    return { valid: false, reason: 'MISSING_COORDINATES' };
+  }
   const latitude = Number(reported?.latitude);
   const longitude = Number(reported?.longitude);
   const expectedLatitude = Number(expected?.latitude);
