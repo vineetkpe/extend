@@ -36,6 +36,8 @@ import { getProjects, getActiveProject } from './utils/projectManager.js';
 // Queue loop lifecycle management
 let activeQueuePromise = null;
 let activeRunId = null;
+// Admission lock prevents overlapping asynchronous START_JOB handlers.
+let startJobInProgress = false;
 
 // Debugger session management for Geolocation CDP Override
 let activeDebuggerTabId = null;
@@ -1120,6 +1122,27 @@ function broadcastMessage(msg) {
  * @param {string} runId
  * @returns {Promise<{ resultItem: object|null, interrupted: boolean, reason?: string }>}
  */
+/**
+ * Creates an explicit inconclusive/error result, never a false ranking loss.
+ */
+function createKeywordErrorResult(item, message) {
+  return {
+    id: item.id,
+    keyword: item.keyword,
+    targetUrl: item.targetUrl,
+    previousPosition: item.previousPosition,
+    currentPosition: 'Error',
+    displayPosition: 'Error',
+    change: '—',
+    matchStatus: 'ERROR',
+    status: 'ERROR',
+    checkedDepth: 0,
+    foundUrl: null,
+    error: message,
+    checkedAt: new Date().toISOString()
+  };
+}
+
 async function checkKeywordRanks(item, tabId, settings, runId) {
   const domain = settings.googleDomain || 'google.com';
   const maxDepth = Math.max(10, Math.min(100, Number(settings.maxPosition) || 50));
@@ -1239,8 +1262,17 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
         return { resultItem: null, interrupted: true, reason: 'BLOCKED' };
       }
 
+      if (!response || response.status !== 'SUCCESS' ||
+          !Array.isArray(response.results) || response.results.length === 0) {
+        const errorMessage = response?.message ||
+          (response?.status === 'SUCCESS'
+            ? 'Google returned no parseable organic results; ranking is inconclusive.'
+            : 'Google search results could not be extracted reliably.');
+        return { resultItem: createKeywordErrorResult(item, errorMessage), interrupted: false };
+      }
+
       if (response && response.status === 'SUCCESS') {
-        const pageResults = response.results || [];
+        const pageResults = response.results;
         let newUniqueCount = 0;
 
         for (const res of pageResults) {
@@ -1326,8 +1358,6 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
             }
           }
         }
-      } else {
-        consecutiveEmptyPages++;
       }
     } catch (err) {
       if (settings && settings.useLocation) {
@@ -1346,40 +1376,11 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
         return { resultItem: null, interrupted: true, reason: errReason };
       }
       console.error(`[LRC] Error on startOffset=${offset} for "${item.keyword}":`, err);
-      consecutiveEmptyPages++;
-
-      if (consecutiveEmptyPages >= 2 && cumulativeResults.length === 0) {
-        if (settings && settings.useLocation) {
-          const techErrIntegrity = await verifyLocationIntegrity({
-            runId,
-            tabId,
-            jobSettings: settings
-          });
-          if (!techErrIntegrity.valid) {
-            return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
-          }
-        }
-
-        // Genuine technical error
-        return {
-          resultItem: {
-            id: item.id,
-            keyword: item.keyword,
-            targetUrl: item.targetUrl,
-            previousPosition: item.previousPosition,
-            currentPosition: 'Error',
-            displayPosition: 'Error',
-            change: '—',
-            matchStatus: 'ERROR',
-            status: 'ERROR',
-            checkedDepth: 0,
-            foundUrl: null,
-            error: err.message || 'Page navigation or extraction failed.',
-            checkedAt: new Date().toISOString()
-          },
-          interrupted: false
-        };
-      }
+      // A failed page makes the checked depth unreliable, even if earlier pages parsed.
+      return {
+        resultItem: createKeywordErrorResult(item, err.message || 'Page navigation or extraction failed.'),
+        interrupted: false
+      };
     }
   }
 
@@ -1723,6 +1724,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       if (request.action === 'START_JOB') {
+        if (startJobInProgress) {
+          sendResponse({ success: false, message: 'A job is already starting. Please wait.' });
+          return;
+        }
+        startJobInProgress = true;
+        try {
         if (!isSessionStorageAvailable()) {
           sendResponse({
             success: false,
@@ -1732,8 +1739,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
+        const currentJob = await getJobState();
+        if (currentJob.status === 'RUNNING' || currentJob.status === 'PAUSED') {
+          sendResponse({ success: false, message: 'A job is already active. Resume or stop it before starting another.' });
+          return;
+        }
+
         const { queue, settings, projectId } = request;
-        if (!queue || queue.length === 0) {
+        if (!Array.isArray(queue) || queue.length === 0) {
           sendResponse({ success: false, message: 'Queue is empty.' });
           return;
         }
@@ -1864,8 +1877,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         // 7. Start queue using runtimeState.jobSettings
         sendResponse({ success: true, state });
-        ensureQueueRunning(runId);
+        ensureQueueRunning(runId).catch(err => console.error('[LRC] Queue start failed:', err));
         return;
+        } finally {
+          startJobInProgress = false;
+        }
       }
 
       if (request.action === 'RETRY_FAILED_JOB') {
@@ -1999,7 +2015,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       if (request.action === 'SAVE_SETTINGS') {
         if (request.settings) {
-          await saveSettings(request.settings);
+          await savePreferences(request.settings);
         }
         sendResponse({ success: true });
         return;
