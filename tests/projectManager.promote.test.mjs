@@ -109,3 +109,54 @@ test('a result cannot be used twice for indistinguishable legacy rows', async ()
   ]);
   assert.deepEqual(updated.map(k => k.previousPosition), [7, 40]);
 });
+
+test('technical errors, incomplete checks and null results preserve historical baselines', async () => {
+  const site = 'https://example.org/page';
+  withSessionKeywords([
+    row('error', 'error keyword', site, 11),
+    row('unchecked', 'unchecked keyword', site, 23),
+    row('null', 'null keyword', site, 49),
+    row('aborted', 'aborted keyword', site, 31)
+  ]);
+  const updated = await promoteCurrentToPrevious(projectId, [
+    { ...result('error', 'error keyword', site, 'Error'), status: 'ERROR', matchStatus: 'ERROR' },
+    { ...result('unchecked', 'unchecked keyword', site, 'NOT CHECKED'), status: 'NOT CHECKED' },
+    { ...result('null', 'null keyword', site, null), status: 'PAUSED' },
+    { ...result('aborted', 'aborted keyword', site, 'Not Found'), status: 'ERROR' }
+  ]);
+  assert.deepEqual(updated.map(k => k.previousPosition), [11, 23, 49, 31]);
+  assert.ok(updated.every(k => k.lastCheckedAt === undefined));
+});
+
+test('an explicitly verified Not Found result updates baseline to an unranked marker', async () => {
+  const site = 'https://example.com/page';
+  withSessionKeywords([row('a', 'dentist', site, 6)]);
+  const updated = await promoteCurrentToPrevious(projectId, [{
+    ...result('a', 'dentist', site, 'Not Found'),
+    status: 'TARGET PAGE NOT FOUND', matchStatus: 'TARGET PAGE NOT FOUND',
+    checkedAt: '2026-10-08T00:00:00Z'
+  }]);
+  assert.equal(updated[0].previousPosition, '-');
+  assert.equal(updated[0].lastCheckedAt, '2026-10-08T00:00:00Z');
+});
+
+test('a malformed unverified negative result cannot erase a rank', async () => {
+  const site = 'https://example.com/page';
+  withSessionKeywords([row('a', 'dentist', site, 6)]);
+  const updated = await promoteCurrentToPrevious(projectId, [
+    result('a', 'dentist', site, 'Not Found')
+  ]);
+  assert.equal(updated[0].previousPosition, 6);
+});
+
+test('valid numeric results are promoted, even for duplicate keywords at different pages', async () => {
+  withSessionKeywords([
+    row('a', 'same', 'https://example.com/A', 30),
+    row('b', 'same', 'https://example.com/B', 20)
+  ]);
+  const updated = await promoteCurrentToPrevious(projectId, [
+    { ...result('a', 'same', 'https://example.com/A', 4), status: 'EXACT PAGE' },
+    { ...result('b', 'same', 'https://example.com/B', 8), status: 'EXACT PAGE' }
+  ]);
+  assert.deepEqual(updated.map(k => k.previousPosition), [4, 8]);
+});
