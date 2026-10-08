@@ -40,6 +40,8 @@
     '.M8OgIe',
     '[data-testid="ai-overview"]',
     '[data-module-type="ai-overview"]',
+    '[data-async-context*="ai_overview"]',
+    '[data-rl="ai_overview"]',
     '[data-attrid*="generative"]',
     '[data-attrid*="ai_overview"]',
     '[data-attrid*="ai-overview"]',
