@@ -118,7 +118,7 @@
         </div>
 
         <div class="location-disclaimer">
-          Browser Location Override: simulates device coordinates in the Google search tab via DevTools Protocol. Does not alter IP address or VPN routing.
+          Browser Location Override: valid coordinates are remembered on this device until Reset Location. Does not alter IP address or VPN routing.
         </div>
 
         <div id="locationFieldsGrid" class="location-fields-grid">
@@ -216,9 +216,9 @@
       </div>
       <p style="margin: 0 0 6px 0;">
         Your SEO data is processed locally in this browser session.
-        We do not receive or store your keywords, client domains, rankings, locations, or results.
+        We receive none of your data. Keywords, client domains and rankings stay in browser session memory. Your last valid latitude, longitude and accuracy are saved on this device until Reset Location, even after closing Chrome.
         Google search queries are sent directly to Google when rank checking runs.
-        Session data is cleared when the browser session ends.
+        Session ranking data is cleared when the browser session ends. Remembered coordinates are not erased by Clear Session Data.
       </p>
       <div style="display: flex; justify-content: flex-end;">
         <button type="button" id="btnPopupClearSession" class="btn btn-sm btn-danger-outline" style="font-size: 10px; padding: 3px 8px; cursor: pointer;">
