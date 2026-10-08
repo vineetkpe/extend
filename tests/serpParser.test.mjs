@@ -22,6 +22,9 @@ class MockElement {
   }
   get href() { return this.attrs.href || ''; }
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
+  getClientRects() {
+    return this.attrs['data-mock-hidden'] === 'true' ? [] : [{}];
+  }
   matches(selector) {
     const match = selector.match(/^([a-z][\w-]*)?(#[\w-]+|\.[\w-]+|\[[^\]]+\])?$/i);
     if (!match) throw new Error('Unsupported test selector: ' + selector);
@@ -216,4 +219,34 @@ test('all allowed Google country domains exclude navigation result links', () =>
     'google.com.mx', 'google.com.sg', 'google.co.nz']) {
     assert.equal(parser.isGoogleInternal('https://www.' + domain + '/search?q=local'), true);
   }
+});
+
+test('AI-only old #rso falls back to bounded #center_col and skips hidden organic copies', () => {
+  const { parser, doc } = parserFor('new-center-col-layout');
+  const output = parser.extractOrganicResults(doc);
+  assert.deepEqual(
+    Array.from(output.results, entry => entry.url),
+    ['https://organic.example/one', 'https://organic.example/two']
+  );
+  assert.deepEqual(Array.from(output.results, entry => entry.position), [1, 2]);
+  assert.equal(output.checkedDepth, 2);
+  assert.equal(output.debugInfo.rootUsed, '#center_col');
+  assert.equal(output.debugInfo.skippedHidden, 1);
+  assert.ok(output.debugInfo.skippedExcluded >= 3);
+});
+
+test('Google center_col works even without old #rso or #search DOM wrappers', () => {
+  const { parser, doc } = parserFor('no-old-roots');
+  const output = parser.extractOrganicResults(doc, { debug: true, keyword: 'repair' });
+  assert.equal(output.results.length, 1);
+  assert.equal(output.results[0].url, 'https://organic.example/works');
+  assert.equal(output.debugInfo.rootUsed, '#center_col');
+  assert.equal(output.debugInfo.missingResultsRoot, false);
+});
+
+test('missing all bounded roots still fails safely without counting header/footer links', () => {
+  const { parser, doc } = parserFor('no-serp-root');
+  const output = parser.extractOrganicResults(doc);
+  assert.equal(output.checkedDepth, 0);
+  assert.equal(output.debugInfo.missingResultsRoot, true);
 });
