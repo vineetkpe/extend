@@ -82,3 +82,11 @@ test('header maps target URLs correctly even with a numeric ID column', () => {
   assert.equal(data[0].keyword, 'solar panels');
   assert.equal(data[0].previousPosition, 13);
 });
+
+test('one-column Keyword header is not treated as a search phrase', () => {
+  const { data, errors } = simplified('Keywords\nsolar installers\nroof cleaning', {
+    defaultTargetUrl: 'https://example.org'
+  });
+  assert.equal(errors.length, 0);
+  assert.deepEqual(data.map(r => r.keyword), ['solar installers', 'roof cleaning']);
+});
