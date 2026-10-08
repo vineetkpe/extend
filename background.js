@@ -32,6 +32,7 @@ import {
   DEFAULT_JOB_SETTINGS
 } from './utils/storage.js';
 import { getProjects, getActiveProject } from './utils/projectManager.js';
+import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/geolocationProof.js';
 import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
@@ -126,6 +127,35 @@ function sendDebuggerCommand(target, method, params = {}) {
       resolve(result);
     });
   });
+}
+
+/**
+ * Validate that this specific Google page actually reports the configured
+ * device coordinates. Setting the CDP override alone is insufficient proof.
+ * Does not claim Google used the coordinates in its search ranking algorithm.
+ */
+async function verifyPageDeviceLocation(tabId, settings) {
+  try {
+    const output = await sendDebuggerCommand({ tabId }, 'Runtime.evaluate', {
+      expression: DEVICE_LOCATION_EXPRESSION,
+      awaitPromise: true,
+      returnByValue: true
+    });
+    if (output?.exceptionDetails) {
+      return { valid: false, error: 'Page geolocation evaluation threw an exception.' };
+    }
+    const reported = output?.result?.value;
+    if (reported?.error) {
+      return { valid: false, error: 'Google page geolocation unavailable: ' + reported.error };
+    }
+    const verified = verifyCoordinatesReported(settings, reported);
+    if (!verified.valid) {
+      return { valid: false, error: 'Google page did not report the configured coordinates (' + verified.reason + ').' };
+    }
+    return { valid: true, reported };
+  } catch (error) {
+    return { valid: false, error: 'Unable to verify Google page geolocation: ' + error.message };
+  }
 }
 
 /**
@@ -1199,6 +1229,12 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
           await debugLog(`[LRC FAIL-CLOSED] Location override lost during/after navigation: ${postNavLoc.reason}`);
           return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
         }
+        const deviceCheck = await verifyPageDeviceLocation(tabId, settings);
+        if (!deviceCheck.valid) {
+          await debugLog('[LRC FAIL-CLOSED] ' + deviceCheck.error);
+          await saveJobState({ locationApplied: false, locationState: LOCATION_STATES.FAILED });
+          return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
+        }
       }
 
       // Brief dynamic render wait (interruptible)
@@ -2131,31 +2167,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           // Attach debugger and set override
           await applyGeolocationOverride(testTab.id, validation, domain);
 
-          // Evaluate navigator.geolocation via CDP Runtime.evaluate
-          const evalResult = await sendDebuggerCommand({ tabId: testTab.id }, 'Runtime.evaluate', {
-            expression: `new Promise((resolve) => {
-              if (!navigator.geolocation) {
-                return resolve({ supported: false, error: 'navigator.geolocation not available in this tab.' });
-              }
-              navigator.geolocation.getCurrentPosition(
-                (pos) => resolve({
-                  supported: true,
-                  lat: pos.coords.latitude,
-                  lon: pos.coords.longitude,
-                  accuracy: pos.coords.accuracy
-                }),
-                (err) => resolve({
-                  supported: true,
-                  error: err.message || 'Position unavailable'
-                }),
-                { timeout: 7000, maximumAge: 0 }
-              );
-            })`,
-            awaitPromise: true,
-            returnByValue: true
-          });
-
-          const resValue = evalResult && evalResult.result ? evalResult.result.value : null;
+          // Confirm the page's Geolocation API returns the simulated coordinates.
+          const deviceCheck = await verifyPageDeviceLocation(testTab.id, validation);
+          const resValue = deviceCheck.valid
+            ? { lat: deviceCheck.reported.latitude, lon: deviceCheck.reported.longitude,
+                accuracy: deviceCheck.reported.accuracy }
+            : { error: deviceCheck.error };
 
           if (createdTempTab) {
             try {
@@ -2174,7 +2191,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 latitude: resValue.lat,
                 longitude: resValue.lon,
                 accuracy: resValue.accuracy,
-                message: `Location Override Verified: ${resValue.lat}, ${resValue.lon}`
+                message: `Browser device location verified: ${resValue.lat}, ${resValue.lon}. Google ranking geography is not guaranteed (IP and account context may differ).`
               });
               return;
             } else {
