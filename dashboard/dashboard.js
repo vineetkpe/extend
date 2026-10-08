@@ -951,6 +951,26 @@ function setupEventListeners() {
     return true;
   }
 
+  // Keep country, depth and delay specific to the selected client.
+  async function persistProjectSearchSettings() {
+    if (!activeProject) return;
+    const updates = {
+      googleDomain: el.googleDomain.value,
+      defaultMaxDepth: Number(el.maxDepth.value) || 50,
+      defaultDelaySeconds: Math.max(5, Number(el.delaySeconds.value) || 8)
+    };
+    const projectId = activeProject.id;
+    try {
+      const updated = await updateProject(projectId, updates);
+      if (activeProject?.id === projectId) activeProject = updated;
+    } catch (error) {
+      showToast('Could not save search settings: ' + error.message, 'error');
+    }
+  }
+  for (const field of [el.googleDomain, el.maxDepth, el.delaySeconds]) {
+    field.addEventListener('change', persistProjectSearchSettings);
+  }
+
   // Tab switching
   el.tabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1033,7 +1053,7 @@ function setupEventListeners() {
     let lon = el.modalProjectLon ? el.modalProjectLon.value.trim() : '';
     let acc = el.modalProjectAcc ? (Number(el.modalProjectAcc.value) || 20) : 20;
 
-    if (useLoc && (lat || lon)) {
+    if (useLoc) {
       const val = validateCoordinates(lat, lon, acc);
       if (!val.valid) {
         showToast(val.error, 'error');
@@ -1575,18 +1595,19 @@ function setupEventListeners() {
       }
     }
 
+    const startedProjectId = activeProject?.id || null;
     try {
       const resp = await chrome.runtime.sendMessage({
         action: 'START_JOB',
         queue: rows,
         settings,
-        projectId: activeProject ? activeProject.id : null
+        projectId: startedProjectId
       });
 
       if (resp && resp.success) {
-        if (activeProject) {
-          await saveProjectKeywords(activeProject.id, rows);
-          activeProject.keywords = rows;
+        if (startedProjectId) {
+          await saveProjectKeywords(startedProjectId, rows);
+          if (activeProject?.id === startedProjectId) activeProject.keywords = rows;
         }
         if (importedWorkbook) importedWorkbook.startedRunId = resp.state?.runId || null;
         syncWorkbookDownloadButton();
