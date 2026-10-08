@@ -1552,6 +1552,12 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
     foundUrl: foundUrl,
     otherPageFound: otherPageFound,
     otherPagePosition: otherPagePosition,
+    // Explain every rank with its source listing. Stored only with
+    // the current session's results, never exported to a server.
+    organicAudit: cumulativeResults.map(entry => ({
+      position: entry.position, url: entry.url, title: entry.title
+    })),
+    countingPolicy: 'strict-organic-web-v2',
     error: null,
     checkedAt: new Date().toISOString()
   };
