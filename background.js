@@ -1232,7 +1232,15 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
         const deviceCheck = await verifyPageDeviceLocation(tabId, settings);
         if (!deviceCheck.valid) {
           await debugLog('[LRC FAIL-CLOSED] ' + deviceCheck.error);
-          await saveJobState({ locationApplied: false, locationState: LOCATION_STATES.FAILED });
+          // Make the next explicit resume reapply CDP instead of reusing a
+          // stale in-memory fingerprint from the failed verification.
+          activeAppliedLocation = null;
+          await saveJobState({
+            locationApplied: false,
+            locationState: LOCATION_STATES.FAILED,
+            appliedLocation: null,
+            lastError: deviceCheck.error
+          });
           return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
         }
       }
