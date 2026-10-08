@@ -34,6 +34,7 @@ import {
 import { getProjects, getActiveProject } from './utils/projectManager.js';
 import { mayStartNewJob, makeFailedRetryPlan } from './utils/jobRetry.js';
 import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/geolocationProof.js';
+import { getVisibleGoogleLocationTab } from './utils/locationPreview.js';
 import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
@@ -163,6 +164,51 @@ async function verifyPageDeviceLocation(tabId, settings) {
 }
 
 /**
+ * Apply and VERIFY coordinates in a visible, dedicated Google Search tab.
+ * Keep this tab open so the user can manually inspect the same tab. Never
+ * claim the Google search footer / IP-based location has been changed.
+ */
+async function activateVisibleGoogleLocation(location, domain, state) {
+  if (state.status === 'RUNNING') {
+    return { success: false, error: 'Stop the active rank check before changing or testing its location.' };
+  }
+  const opened = await getVisibleGoogleLocationTab({
+    searchTabId: state.searchTabId,
+    googleDomain: domain,
+    tabs: chrome.tabs,
+    navigate: navigateAndWaitForTab
+  });
+  const tabId = opened.tab.id;
+  try {
+    await applyGeolocationOverride(tabId, location, domain);
+    const check = await verifyPageDeviceLocation(tabId, location);
+    if (!check.valid) {
+      await clearGeolocationOverride(tabId);
+      return {
+        success: false,
+        tabId,
+        error: check.error + ' In this Google tab, set Site settings → Location → Allow, then test again.'
+      };
+    }
+    await saveJobState({ searchTabId: tabId });
+    return {
+      success: true,
+      verified: true,
+      applied: true,
+      tabId,
+      reported: check.reported,
+      message: 'Browser device coordinates verified in Google tab ' + tabId +
+        ': ' + check.reported.latitude + ', ' + check.reported.longitude +
+        '. The Google footer may still show your IP-based city. ' +
+        'Only this tab is overridden; other tabs and your public IP are unchanged.'
+    };
+  } catch (error) {
+    try { await clearGeolocationOverride(tabId); } catch (_) {}
+    return { success: false, tabId, error: 'Could not verify location in Google tab: ' + error.message };
+  }
+}
+
+/**
  * Applies geolocation override to a given tab using Chrome DevTools Protocol (CDP).
  * @param {number} tabId 
  * @param {object} coords { latitude, longitude, accuracy, locationName }
@@ -205,13 +251,9 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
     accuracy: validation.accuracy
   });
 
-  // Attempt to grant geolocation permissions to Google domain
-  try {
-    await sendDebuggerCommand(target, 'Browser.grantPermissions', {
-      permissions: ['geolocation'],
-      origin: `https://www.${googleDomain}`
-    });
-  } catch (_) {}
+  // Chrome's extension debugger API does not allow Browser.grantPermissions.
+  // The website's ordinary geolocation site permission must be allowed by
+  // the user. verifyPageDeviceLocation reports that clearly if denied.
 
   activeAppliedLocation = createLocationFingerprint(tabId, validation.latitude, validation.longitude, validation.accuracy);
 
@@ -2059,71 +2101,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
 
         const state = await getJobState();
-        let targetTabId = state.searchTabId;
-        let tab = null;
-        if (targetTabId) {
-          try {
-            tab = await chrome.tabs.get(targetTabId);
-          } catch (_) {
-            tab = null;
-          }
-        }
-
         const prefs = await getPreferences();
-        const domain = (state.jobSettings && state.jobSettings.googleDomain) || prefs.googleDomain || 'google.com';
-
-        if (tab) {
-          try {
-            await applyGeolocationOverride(tab.id, {
-              latitude: validation.latitude,
-              longitude: validation.longitude,
-              accuracy: validation.accuracy,
-              locationName: loc.locationName || ''
-            }, domain);
-            sendResponse({
-              success: true,
-              applied: true,
-              tabId: tab.id,
-              details: validation,
-              message: `LOCATION: ACTIVE on tab ${tab.id}`
-            });
-            return;
-          } catch (err) {
-            sendResponse({ success: false, error: err.message });
-            return;
-          }
-        } else {
-          // Tab not created yet; save configured state truthfully in session storage
-          await saveJobState({
-            locationConfigured: true,
-            locationApplied: false,
-            locationState: LOCATION_STATES.CONFIGURED,
-            locationTabId: null,
-            locationDetails: {
-              latitude: validation.latitude,
-              longitude: validation.longitude,
-              accuracy: validation.accuracy,
-              locationName: loc.locationName || ''
-            }
-          });
-          broadcastMessage({
-            action: 'LOCATION_STATUS_UPDATE',
-            status: LOCATION_STATES.CONFIGURED,
-            details: {
-              latitude: validation.latitude,
-              longitude: validation.longitude,
-              accuracy: validation.accuracy,
-              locationName: loc.locationName || ''
-            }
-          });
-          sendResponse({
-            success: true,
-            applied: false,
-            configured: true,
-            message: 'LOCATION: CONFIGURED — WILL APPLY WHEN RANK CHECK STARTS'
-          });
-          return;
-        }
+        const domain = (state.jobSettings && state.jobSettings.googleDomain) ||
+          prefs.googleDomain || 'google.com';
+        const result = await activateVisibleGoogleLocation({
+          latitude: validation.latitude,
+          longitude: validation.longitude,
+          accuracy: validation.accuracy,
+          locationName: loc.locationName || ''
+        }, domain, state);
+        sendResponse(result);
+        return;
       }
 
       if (request.action === 'RESET_LOCATION') {
@@ -2140,86 +2128,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
+        const state = await getJobState();
         const prefs = await getPreferences();
-        const domain = prefs.googleDomain || 'google.com';
-
-        let testTab = null;
-        let createdTempTab = false;
-
-        try {
-          const state = await getJobState();
-          if (state.searchTabId) {
-            try {
-              testTab = await chrome.tabs.get(state.searchTabId);
-            } catch (_) {}
-          }
-
-          if (!testTab) {
-            testTab = await chrome.tabs.create({
-              url: `https://www.${domain}`,
-              active: false
-            });
-            createdTempTab = true;
-            await new Promise(r => setTimeout(r, 2000));
-          }
-
-          // Attach debugger and set override
-          await applyGeolocationOverride(testTab.id, validation, domain);
-
-          // Confirm the page's Geolocation API returns the simulated coordinates.
-          const deviceCheck = await verifyPageDeviceLocation(testTab.id, validation);
-          const resValue = deviceCheck.valid
-            ? { lat: deviceCheck.reported.latitude, lon: deviceCheck.reported.longitude,
-                accuracy: deviceCheck.reported.accuracy }
-            : { error: deviceCheck.error };
-
-          if (createdTempTab) {
-            try {
-              await detachDebugger({ tabId: testTab.id });
-              await chrome.tabs.remove(testTab.id);
-            } catch (_) {}
-          }
-
-          if (resValue && resValue.lat !== undefined && resValue.lon !== undefined) {
-            const latDiff = Math.abs(resValue.lat - validation.latitude);
-            const lonDiff = Math.abs(resValue.lon - validation.longitude);
-            if (latDiff < 0.05 && lonDiff < 0.05) {
-              sendResponse({
-                success: true,
-                verified: true,
-                latitude: resValue.lat,
-                longitude: resValue.lon,
-                accuracy: resValue.accuracy,
-                message: `Browser device location verified: ${resValue.lat}, ${resValue.lon}. Google ranking geography is not guaranteed (IP and account context may differ).`
-              });
-              return;
-            } else {
-              sendResponse({
-                success: true,
-                verified: false,
-                latitude: resValue.lat,
-                longitude: resValue.lon,
-                message: `Override set, but browser reported coordinates ${resValue.lat}, ${resValue.lon}`
-              });
-              return;
-            }
-          } else {
-            sendResponse({
-              success: false,
-              error: resValue && resValue.error ? resValue.error : 'Location Override Failed: Geolocation request timed out or was blocked.'
-            });
-            return;
-          }
-        } catch (err) {
-          if (createdTempTab && testTab) {
-            try { await chrome.tabs.remove(testTab.id); } catch (_) {}
-          }
-          sendResponse({
-            success: false,
-            error: `Location Override Failed: ${err.message}`
-          });
-          return;
-        }
+        const domain = (state.jobSettings && state.jobSettings.googleDomain) ||
+          prefs.googleDomain || 'google.com';
+        const result = await activateVisibleGoogleLocation(validation, domain, state);
+        sendResponse(result);
+        return;
       }
     } catch (err) {
       console.error('[LRC] Message handling error:', err);
