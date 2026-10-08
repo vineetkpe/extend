@@ -135,7 +135,7 @@ If something does not appear as expected, inspect the relevant component:
 - Chrome's device-geolocation override cannot change an IP address or guarantee Google's actual geographic ranking location.
 
 
-## Organic ranking position methodology (strict-organic-web-v1)
+## Organic ranking position methodology (strict-organic-web-v2)
 
 SERPTrack reports **organic web listing position**, **not** Google Search Console
 "average position", "All" surface placement, AI citation position, Maps ranking,
