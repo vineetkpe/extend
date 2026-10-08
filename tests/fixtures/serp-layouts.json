@@ -200,7 +200,7 @@
             "class": "g",
             "children": [
               {
-                "tag": "div",
+                "tag": "ul",
                 "class": "sitelinks",
                 "children": [
                   {
