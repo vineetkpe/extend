@@ -284,7 +284,8 @@ const URL_HEADER_ALIASES = new Set([
 ]);
 const POSITION_HEADER_ALIASES = new Set([
   'previous', 'previous rank', 'previous position', 'old rank', 'last rank',
-  'last position', 'current rank', 'current position', 'position', 'rank'
+  'last position', 'current rank', 'current position', 'position', 'rank',
+  'ranking', 'latest rank', 'latest ranking', 'google rank', 'organic rank'
 ]);
 
 function splitPasteCells(line, delimiter) {
