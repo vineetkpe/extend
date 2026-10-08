@@ -407,6 +407,9 @@ export function parseInputRows(text, options = {}) {
     if (!started) {
       started = true;
       delimiter = pasteDelimiter(rawLine);
+      // Single-column spreadsheets often copy their header with the keywords.
+      // Do not rank the literal word "Keyword" as if it were a search term.
+      if (!delimiter && defaultUrl && KEYWORD_HEADER_ALIASES.has(line.toLowerCase())) return;
       if (delimiter) {
         mapping = headerMapping(splitPasteCells(rawLine, delimiter));
         if (mapping) return;
