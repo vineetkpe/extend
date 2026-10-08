@@ -174,3 +174,46 @@ test('parser deduplication retains non-default ports', () => {
     parser.normalizeUrl('https://example.com/Service')
   );
 });
+
+test('strict organic ranking excludes AI citations, ads, PAA, map packs and carousel headings', () => {
+  const { parser, doc } = parserFor('strict-organic-with-serp-features');
+  const output = parser.extractOrganicResults(doc);
+  assert.deepEqual(
+    Array.from(output.results, entry => entry.url),
+    [
+      'https://example.com/featured',
+      'https://example.com/main',
+      'https://another.example/organic',
+      'https://www.youtube.com/watch?v=standalone'
+    ]
+  );
+  assert.deepEqual(Array.from(output.results, entry => entry.position), [1, 2, 3, 4]);
+  assert.equal(output.checkedDepth, 4);
+  assert.equal(output.debugInfo.countingPolicy, 'strict-organic-web-v1');
+  assert.equal(output.debugInfo.skippedExcluded, 13);
+  assert.equal(output.debugInfo.skippedSecondaryLinks, 1);
+});
+
+test('AI-only citations and PAA do not become organic positions', () => {
+  const { parser, doc } = parserFor('ai-only-results');
+  const output = parser.extractOrganicResults(doc);
+  assert.equal(output.results.length, 0);
+  assert.equal(output.checkedDepth, 0);
+  assert.equal(output.debugInfo.skippedExcluded, 2);
+});
+
+test('standalone featured snippet counts once, while a secondary link in same .g does not', () => {
+  const { parser, doc } = parserFor('strict-organic-with-serp-features');
+  const output = parser.extractOrganicResults(doc);
+  assert.equal(output.results[0].url, 'https://example.com/featured');
+  assert.equal(output.results[0].position, 1);
+  assert.ok(!output.results.some(item => item.url.includes('secondary-sitelink')));
+});
+
+test('all allowed Google country domains exclude navigation result links', () => {
+  const { parser } = parserFor('mixed-layout');
+  for (const domain of ['google.es', 'google.it', 'google.ie', 'google.com.br',
+    'google.com.mx', 'google.com.sg', 'google.co.nz']) {
+    assert.equal(parser.isGoogleInternal('https://www.' + domain + '/search?q=local'), true);
+  }
+});

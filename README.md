@@ -133,3 +133,34 @@ If something does not appear as expected, inspect the relevant component:
 - Valid latitude/longitude/accuracy pairs are retained in `chrome.storage.local` **on this device only** so they survive popup/dashboard switches and browser restarts. The latest pair is a convenient default, **not an automatically enabled client location**.
 - Click **Reset Location** to delete remembered coordinates. **Clear Session Data does not delete that saved device coordinate pair**. Other sensitive client data remains in `chrome.storage.session`; the original workbook remains only in dashboard memory.
 - Chrome's device-geolocation override cannot change an IP address or guarantee Google's actual geographic ranking location.
+
+
+## Organic ranking position methodology (strict-organic-web-v1)
+
+SERPTrack reports **organic web listing position**, **not** Google Search Console
+"average position", "All" surface placement, AI citation position, Maps ranking,
+or universal/paid placement.
+
+- **Count**: one regular standalone organic website result per visible main
+  listing, in DOM order. A standalone featured snippet with a conventional
+  primary website result link counts as one listing. A standalone YouTube
+  result may count as an organic web listing, but a video carousel does not.
+- **Exclude**: AI Overviews and their citations, AI-generated summaries,
+  sponsored ads, shopping/product cards, map/local packs, People Also Ask,
+  knowledge panels, Top Stories and news/video/image carousels,
+  discussions/forum packs, related searches, sitelinks and secondary cards.
+- **Pagination**: continue the sequence of extracted organic listings; a URL
+  repeated as an independent listing on another Google page still consumes
+  a listing position. If Google ignores pagination and returns only already
+  visited URLs, the rank check reports ERROR instead of inventing positions.
+- **Uncertainty**: changes to Google's DOM, ambiguous result grouping,
+  personalization and geographic targeting can affect observed positions.
+  When no trustworthy organic listings can be extracted, report ERROR
+  rather than treating the target as unranked. Compare against the
+  standalone organic web listings you can see, **not** all visible cards.
+
+Use the Chrome extension's debug mode on an actual Google SERP and review
+`window.LOCAL_RANK_DEBUG` to see the parsed organic URLs in order, together
+with skipped-feature and secondary-heading counts. The parser uses structural
+selectors which can change as Google updates its search UI; synthetic tests
+do not establish accuracy on every live query or country.
