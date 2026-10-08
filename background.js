@@ -1164,6 +1164,27 @@ function broadcastMessage(msg) {
  * @param {string} runId
  * @returns {Promise<{ resultItem: object|null, interrupted: boolean, reason?: string }>}
  */
+/**
+ * Inconclusive navigation/parsing must not be recorded as a ranking loss.
+ */
+function createKeywordErrorResult(item, message) {
+  return {
+    id: item.id,
+    keyword: item.keyword,
+    targetUrl: item.targetUrl,
+    previousPosition: item.previousPosition,
+    currentPosition: 'Error',
+    displayPosition: 'Error',
+    change: '—',
+    matchStatus: 'ERROR',
+    status: 'ERROR',
+    checkedDepth: 0,
+    foundUrl: null,
+    error: message,
+    checkedAt: new Date().toISOString()
+  };
+}
+
 async function checkKeywordRanks(item, tabId, settings, runId) {
   const domain = settings.googleDomain || 'google.com';
   const maxDepth = Math.max(10, Math.min(100, Number(settings.maxPosition) || 50));
@@ -1297,8 +1318,17 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
         return { resultItem: null, interrupted: true, reason: 'BLOCKED' };
       }
 
-      if (response && response.status === 'SUCCESS') {
-        const pageResults = response.results || [];
+      if (!response || response.status !== 'SUCCESS' ||
+          !Array.isArray(response.results) || response.results.length === 0) {
+        const message = response?.message ||
+          (response?.status === 'SUCCESS'
+            ? 'Google returned no parseable organic results; ranking is inconclusive.'
+            : 'Google results could not be extracted reliably.');
+        return { resultItem: createKeywordErrorResult(item, message), interrupted: false };
+      }
+
+      if (response.status === 'SUCCESS') {
+        const pageResults = response.results;
         let newUniqueCount = 0;
 
         for (const res of pageResults) {
@@ -1384,8 +1414,6 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
             }
           }
         }
-      } else {
-        consecutiveEmptyPages++;
       }
     } catch (err) {
       if (settings && settings.useLocation) {
@@ -1404,40 +1432,11 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
         return { resultItem: null, interrupted: true, reason: errReason };
       }
       console.error(`[LRC] Error on startOffset=${offset} for "${item.keyword}":`, err);
-      consecutiveEmptyPages++;
-
-      if (consecutiveEmptyPages >= 2 && cumulativeResults.length === 0) {
-        if (settings && settings.useLocation) {
-          const techErrIntegrity = await verifyLocationIntegrity({
-            runId,
-            tabId,
-            jobSettings: settings
-          });
-          if (!techErrIntegrity.valid) {
-            return { resultItem: null, interrupted: true, reason: 'LOCATION_LOST' };
-          }
-        }
-
-        // Genuine technical error
-        return {
-          resultItem: {
-            id: item.id,
-            keyword: item.keyword,
-            targetUrl: item.targetUrl,
-            previousPosition: item.previousPosition,
-            currentPosition: 'Error',
-            displayPosition: 'Error',
-            change: '—',
-            matchStatus: 'ERROR',
-            status: 'ERROR',
-            checkedDepth: 0,
-            foundUrl: null,
-            error: err.message || 'Page navigation or extraction failed.',
-            checkedAt: new Date().toISOString()
-          },
-          interrupted: false
-        };
-      }
+      // A failed page invalidates an otherwise partial ranking scan.
+      return {
+        resultItem: createKeywordErrorResult(item, err.message || 'Page navigation or extraction failed.'),
+        interrupted: false
+      };
     }
   }
 
@@ -2046,7 +2045,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       if (request.action === 'SAVE_SETTINGS') {
         if (request.settings) {
-          await saveSettings(request.settings);
+          await savePreferences(request.settings);
         }
         sendResponse({ success: true });
         return;
