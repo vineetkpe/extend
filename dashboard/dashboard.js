@@ -316,7 +316,7 @@ async function loadActiveProjectIntoUI(proj) {
 
   // Geolocation simulation per project
   const saved = getLocationForProject(cfg, await getRememberedCoordinates());
-  el.useLocationToggle.checked = Boolean(cfg.useLocation);
+  el.useLocationToggle.checked = Boolean(cfg.useLocation && saved.source === 'project');
   el.locName.value = cfg.locationName || '';
   el.locLat.value = saved.latitude;
   el.locLon.value = saved.longitude;
@@ -1131,6 +1131,7 @@ function setupEventListeners() {
   // Location Simulation Actions
   el.useLocationToggle.addEventListener('change', async (e) => {
     if (activeProject) {
+      if (e.target.checked) await persistEditedLocation();
       await updateProject(activeProject.id, { useLocation: e.target.checked });
       activeProject.config.useLocation = e.target.checked;
     }
