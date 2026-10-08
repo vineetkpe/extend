@@ -38,6 +38,7 @@ import {
 } from '../utils/projectManager.js';
 
 import { validateCoordinates } from '../utils/locationValidator.js';
+import { getRememberedCoordinates, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
 import {
   LOCATION_STATES,
   isSessionStorageAvailable,
@@ -298,7 +299,7 @@ async function refreshProjectsList() {
     el.projectSelect.appendChild(option);
   });
 
-  loadActiveProjectIntoUI(activeProject);
+  await loadActiveProjectIntoUI(activeProject);
 }
 
 /**
@@ -306,18 +307,19 @@ async function refreshProjectsList() {
  * Bug 1 Fix: Explicitly loads that project's exact location configuration.
  * @param {object} proj 
  */
-function loadActiveProjectIntoUI(proj) {
+async function loadActiveProjectIntoUI(proj) {
   if (!proj) return;
   const cfg = proj.config || proj;
 
   el.progProjectName.textContent = `Project: ${cfg.projectName || 'Default Client'}`;
 
   // Geolocation simulation per project
+  const saved = getLocationForProject(cfg, await getRememberedCoordinates());
   el.useLocationToggle.checked = Boolean(cfg.useLocation);
   el.locName.value = cfg.locationName || '';
-  el.locLat.value = cfg.latitude || '';
-  el.locLon.value = cfg.longitude || '';
-  el.locAcc.value = cfg.accuracy !== undefined ? cfg.accuracy : 20;
+  el.locLat.value = saved.latitude;
+  el.locLon.value = saved.longitude;
+  el.locAcc.value = saved.accuracy;
 
   // Search parameters
   el.googleDomain.value = cfg.googleDomain || 'google.com';
@@ -906,7 +908,7 @@ function setupEventListeners() {
     resetWorkbookImport();
     await setActiveProjectId(selectedId);
     activeProject = await getActiveProject();
-    loadActiveProjectIntoUI(activeProject);
+    await loadActiveProjectIntoUI(activeProject);
     showToast(`Switched to project: ${activeProject.config?.projectName || 'Project'}`, 'info');
   });
 
@@ -1100,6 +1102,30 @@ function setupEventListeners() {
   el.btnCancelConfirm.addEventListener('click', closeConfirmModal);
   el.btnCloseConfirmModal.addEventListener('click', closeConfirmModal);
 
+  async function persistEditedLocation() {
+    if (!activeProject) return;
+    const validation = validateCoordinates(el.locLat.value, el.locLon.value, el.locAcc.value);
+    if (!validation.valid) return;
+    try {
+      const saved = await rememberCoordinates(validation);
+      if (!saved.saved) throw new Error(saved.error);
+      const config = {
+        latitude: String(validation.latitude),
+        longitude: String(validation.longitude),
+        accuracy: validation.accuracy,
+        locationName: el.locName.value.trim()
+      };
+      await updateProject(activeProject.id, config);
+      Object.assign(activeProject.config || activeProject, config);
+    } catch (error) {
+      showToast('Could not remember location: ' + error.message, 'error');
+    }
+  }
+
+  for (const field of [el.locLat, el.locLon, el.locAcc, el.locName]) {
+    field.addEventListener('change', persistEditedLocation);
+  }
+
   // Location Simulation Actions
   el.useLocationToggle.addEventListener('change', async (e) => {
     if (activeProject) {
@@ -1121,6 +1147,7 @@ function setupEventListeners() {
     }
 
     try {
+      await persistEditedLocation();
       if (activeProject) {
         await updateProject(activeProject.id, {
           useLocation: true,
@@ -1191,6 +1218,7 @@ function setupEventListeners() {
   el.btnClearLocation.addEventListener('click', async () => {
     try {
       await chrome.runtime.sendMessage({ action: 'RESET_LOCATION' });
+      await forgetRememberedCoordinates();
       el.locLat.value = '';
       el.locLon.value = '';
       el.locName.value = '';
@@ -1243,6 +1271,7 @@ function setupEventListeners() {
       el.locLon.value = inspected.location.longitude;
       el.locName.value = inspected.location.locationName;
       el.locAcc.value = '20';
+      await persistEditedLocation();
     }
     el.workbookStatus.textContent =
       filename + ': ' + inspected.rows.length + ' website keywords imported from "' +
