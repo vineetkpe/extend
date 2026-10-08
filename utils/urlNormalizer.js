@@ -25,33 +25,35 @@ const TRACKING_PARAMS = new Set([
   'dpr'
 ]);
 
+// Only actual Google search hosts may supply /url?q= redirect wrappers.
+const GOOGLE_REDIRECT_HOSTS = new Set([
+  'google.com', 'google.co.uk', 'google.co.in', 'google.com.au',
+  'google.ca', 'google.de', 'google.fr'
+]);
+
 /**
- * Extracts destination URL if wrapped in Google redirect (/url?q=... or /url?url=...)
- * @param {string} url 
- * @returns {string} unwrapped URL or original
+ * Unwrap a genuine Google search redirect; leave unrelated URLs untouched.
+ * Return an empty string for invalid/unsafe Google redirect destinations.
  */
-export function cleanGoogleRedirect(url) {
-  if (!url || typeof url !== 'string') return '';
+export function cleanGoogleRedirect(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return '';
+  const value = rawUrl.trim();
+  const relativeRedirect = value.startsWith('/url?');
+  if (!relativeRedirect && !/^https?:\/\//i.test(value)) return value;
+
   try {
-    if (url.includes('/url?') || url.includes('/url&')) {
-      const parsed = new URL(url.startsWith('http') ? url : `https://www.google.com${url}`);
-      const dest = parsed.searchParams.get('q') || parsed.searchParams.get('url');
-      if (dest) {
-        return dest;
-      }
+    const parsed = new URL(value, relativeRedirect ? 'https://www.google.com' : undefined);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    if (parsed.pathname !== '/url' || !GOOGLE_REDIRECT_HOSTS.has(host)) {
+      return relativeRedirect ? '' : value;
     }
-  } catch (e) {
-    // If parsing fails, fall back to regex
-    const match = url.match(/[?&](?:q|url)=(https?%3A%2F%2F[^&]+|https?:\/\/[^&]+)/i);
-    if (match && match[1]) {
-      try {
-        return decodeURIComponent(match[1]);
-      } catch (_) {
-        return match[1];
-      }
-    }
+    const destination = parsed.searchParams.get('q') || parsed.searchParams.get('url');
+    if (!destination || !/^https?:\/\//i.test(destination)) return '';
+    const target = new URL(destination);
+    return ['http:', 'https:'].includes(target.protocol) ? target.href : '';
+  } catch (_) {
+    return relativeRedirect ? '' : value;
   }
-  return url;
 }
 
 /**
@@ -77,96 +79,52 @@ export function isValidTargetUrl(rawUrl) {
 export const isSafeUrl = isValidTargetUrl;
 
 /**
- * Normalizes a URL for comparison:
- * - Trims whitespace
- * - Decodes percent-encoded characters where safe
- * - Normalizes scheme (forces lowercase)
- * - Removes 'www.'
- * - Removes default ports (:80, :443)
- * - Removes trailing slash from path
- * - Strips URL fragments (#...)
- * - Strips common tracking parameters
- * - Sorts remaining query parameters for consistent order
- * 
- * @param {string} rawUrl 
- * @returns {string} normalized URL string
+ * Normalize a URL for exact landing-page matching and SERP deduplication.
+ *
+ * Intentional equivalences: scheme, www, root/trailing slash, fragments,
+ * tracking parameters and query parameter ordering.
+ * Strict distinctions: path case/encoding, query key case/value and ports.
+ * Invalid input must not turn into a guessed matching URL.
  */
 export function normalizeUrl(rawUrl) {
-  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return '';
   const trimmed = rawUrl.trim();
   if (/^(javascript|data|file|chrome|chrome-extension|about|blob|vbscript):/i.test(trimmed)) {
     return '';
   }
-
-  let cleaned = cleanGoogleRedirect(trimmed);
-
-  // Ensure scheme exists for URL parser
-  if (!/^https?:\/\//i.test(cleaned)) {
-    cleaned = 'https://' + cleaned;
-  }
+  const unwrapped = cleanGoogleRedirect(trimmed);
+  if (!unwrapped) return '';
+  const candidate = /^https?:\/\//i.test(unwrapped) ? unwrapped : 'https://' + unwrapped;
 
   try {
-    const parsed = new URL(cleaned);
+    const parsed = new URL(candidate);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) return '';
 
-    // 1. Lowercase hostname and remove www.
-    let hostname = parsed.hostname.toLowerCase();
-    if (hostname.startsWith('www.')) {
-      hostname = hostname.slice(4);
-    }
+    let host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    // WHATWG URL already removes default ports; retain non-default ports.
+    if (parsed.port) host += ':' + parsed.port;
 
-    // 2. Normalize pathname: lowercase, decode safely, strip trailing slash
+    // Preserve path case and percent escapes: /a%2Fb may differ from /a/b.
     let pathname = parsed.pathname;
-    try {
-      pathname = decodeURIComponent(pathname);
-    } catch (_) {
-      // Keep as-is if malformed percent encoding
-    }
-    pathname = pathname.toLowerCase();
-    if (pathname.length > 1 && pathname.endsWith('/')) {
-      pathname = pathname.slice(0, -1);
-    }
-    // If pathname is just '/', normalize to empty string for root domain
-    if (pathname === '/') {
-      pathname = '';
-    }
+    if (pathname.length > 1 && pathname.endsWith('/')) pathname = pathname.slice(0, -1);
+    if (pathname === '/') pathname = '';
 
-    // 3. Filter query parameters
-    const searchParams = new URLSearchParams(parsed.search);
     const retainedParams = [];
-    for (const [key, value] of searchParams.entries()) {
+    for (const [key, value] of parsed.searchParams.entries()) {
       const lowerKey = key.toLowerCase();
       if (!TRACKING_PARAMS.has(lowerKey) && !lowerKey.startsWith('utm_')) {
-        retainedParams.push([lowerKey, value.trim()]);
+        retainedParams.push([key, value]);
       }
     }
-
-    // Sort query parameters alphabetically
+    // Stable sorting keeps duplicate values of the same key in input order.
     retainedParams.sort((a, b) => a[0].localeCompare(b[0]));
+    const queryString = retainedParams.length
+      ? '?' + new URLSearchParams(retainedParams).toString()
+      : '';
 
-    let queryString = '';
-    if (retainedParams.length > 0) {
-      const cleanParams = new URLSearchParams();
-      for (const [k, v] of retainedParams) {
-        cleanParams.append(k, v);
-      }
-      queryString = '?' + cleanParams.toString();
-    }
-
-    // Return hostname + path + query (without protocol or www)
-    return `${hostname}${pathname}${queryString}`;
-  } catch (err) {
-    // Basic fallback string cleanup if URL constructor fails
-    let fallback = cleaned
-      .replace(/^https?:\/\//i, '')
-      .replace(/^www\./i, '')
-      .split('#')[0]
-      .split('?')[0]
-      .trim()
-      .toLowerCase();
-    if (fallback.endsWith('/')) {
-      fallback = fallback.slice(0, -1);
-    }
-    return fallback;
+    return host + pathname + queryString;
+  } catch (_) {
+    return '';
   }
 }
 
