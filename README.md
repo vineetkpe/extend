@@ -94,13 +94,13 @@ The extension Manifest includes the `"debugger"` permission:
 1. In the extension popup, check **Use Location Simulation**.
 2. Enter the target **Latitude** (e.g. `40.7128`) and **Longitude** (e.g. `-74.0060`).
 3. (Optional) Enter a **Location Name** (e.g. `New York Client`) and **Accuracy** (default: `20` meters).
-4. Click **APPLY LOCATION** to configure or activate the override.
-5. Click **TEST LOCATION** to verify that the browser's geolocation API in a search tab reports the simulated coordinates.
+4. Click **APPLY LOCATION** to open a dedicated Google search tab and verify its device-geolocation override.
+5. Click **TEST LOCATION** to focus and verify that same Google tab again. The test tab stays open (until you close it or reset the override). If Chrome denies the request, open that tab's **Site settings → Location → Allow**, then retry. **Do not use Google's page-footer city as the test result**: that may be based on your IP address.
 6. Click **START** to run rank checking under the active simulated location.
 7. Click **RESET LOCATION** at any time to clear the override and detach the debugger session.
 
 ### Known Limitations:
-- **Browser Geolocation Override vs. IP**: The override alters device/browser geolocation (`navigator.geolocation`). It does **not** alter public IP address, ISP, or VPN routing.
+- **Browser Geolocation Override vs. IP**: The override alters the *attached tab's* device/browser geolocation (`navigator.geolocation`) only. It does **not** alter public IP address, ISP, VPN routing, Google's footer location, or tabs elsewhere in Chrome.
 - Google combines multiple signals (including IP subnet, Google Account history, and language preferences) to infer user location. The extension displays `Browser Location Override: ACTIVE`, but does not guarantee exact Google SERP localized results for IP-restricted queries.
 
 ---
