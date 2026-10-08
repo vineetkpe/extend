@@ -393,6 +393,42 @@
           },
           {
             "tag": "div",
+            "attrs": {
+              "data-async-context": "content=ai_overview"
+            },
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://ai-async.example/ref",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Async AI citation"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "attrs": {
+              "data-rl": "ai_overview"
+            },
+            "children": [
+              {
+                "tag": "a",
+                "href": "https://ai-variant.example/ref",
+                "children": [
+                  {
+                    "tag": "h3",
+                    "text": "Alternate AI citation"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
             "id": "tads",
             "children": [
               {
