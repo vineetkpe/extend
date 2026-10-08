@@ -32,12 +32,16 @@ import {
   DEFAULT_JOB_SETTINGS
 } from './utils/storage.js';
 import { getProjects, getActiveProject } from './utils/projectManager.js';
+import { mayStartNewJob, makeFailedRetryPlan } from './utils/jobRetry.js';
 import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/geolocationProof.js';
 import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
 let activeQueuePromise = null;
 let activeRunId = null;
+// Synchronous admission guard for concurrent START_JOB / RETRY_FAILED_JOB
+// requests received while their async storage operations are in flight.
+let jobAdmissionBusy = false;
 
 // Debugger session management for Geolocation CDP Override
 let activeDebuggerTabId = null;
@@ -1768,8 +1772,17 @@ async function ensureQueueRunning(runId) {
  */
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   (async () => {
+    let holdsAdmission = false;
     try {
       await workerRecoveryPromise;
+      if (request.action === 'START_JOB' || request.action === 'RETRY_FAILED_JOB') {
+        if (jobAdmissionBusy) {
+          sendResponse({ success: false, message: 'A job is already starting. Please wait.' });
+          return;
+        }
+        jobAdmissionBusy = true;
+        holdsAdmission = true;
+      }
       if (request.action === 'GET_STATE') {
         const state = await getJobState();
         const preferences = await getPreferences();
@@ -1778,6 +1791,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       if (request.action === 'START_JOB') {
+        const currentState = await getJobState();
+        if (!mayStartNewJob(currentState)) {
+          sendResponse({ success: false, message: 'A job is already active. Resume or stop it before starting another.' });
+          return;
+        }
         if (!isSessionStorageAvailable()) {
           sendResponse({
             success: false,
@@ -1788,7 +1806,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
 
         const { queue, settings, projectId } = request;
-        if (!queue || queue.length === 0) {
+        if (!Array.isArray(queue) || queue.length === 0) {
           sendResponse({ success: false, message: 'Queue is empty.' });
           return;
         }
@@ -1919,7 +1937,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         // 7. Start queue using runtimeState.jobSettings
         sendResponse({ success: true, state });
-        ensureQueueRunning(runId);
+        ensureQueueRunning(runId).catch(err => console.error('[LRC] Queue start failed:', err));
         return;
       }
 
@@ -1931,39 +1949,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
-        if (!currentState.results || currentState.results.length === 0) {
-          sendResponse({ success: false, message: 'No results to retry.' });
+        const retry = makeFailedRetryPlan(currentState);
+        if (!retry.allowed) {
+          sendResponse({ success: false, message: retry.error });
           return;
         }
-
-        const failedItems = [];
-        const currentResults = [...currentState.results];
-
-        currentResults.forEach((res, idx) => {
-          if (res && (res.status === 'ERROR' || res.matchStatus === 'ERROR')) {
-            const origIdx = res.originalIndex !== undefined ? res.originalIndex : idx;
-            failedItems.push({
-              id: res.id || `kw_${origIdx}`,
-              originalIndex: origIdx,
-              keyword: res.keyword,
-              targetUrl: res.targetUrl,
-              previousPosition: res.previousPosition ?? null
-            });
-            currentResults[origIdx] = {
-              ...res,
-              status: 'NOT CHECKED',
-              currentPosition: 'NOT CHECKED',
-              displayPosition: 'NOT CHECKED',
-              change: '—',
-              error: null
-            };
-          }
-        });
-
-        if (failedItems.length === 0) {
-          sendResponse({ success: false, message: 'No failed keywords found to retry.' });
-          return;
-        }
+        const failedItems = retry.queue;
+        const currentResults = retry.results;
 
         const runId = generateRunId();
         const state = await saveJobState({
@@ -1981,7 +1973,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
 
         sendResponse({ success: true, state, retryingCount: failedItems.length });
-        ensureQueueRunning(runId);
+        ensureQueueRunning(runId).catch(err => console.error('[LRC] Retry queue failed:', err));
         return;
       }
 
@@ -2233,6 +2225,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     } catch (err) {
       console.error('[LRC] Message handling error:', err);
       sendResponse({ success: false, error: err.message });
+    } finally {
+      if (holdsAdmission) jobAdmissionBusy = false;
     }
   })();
 
