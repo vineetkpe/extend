@@ -684,7 +684,8 @@ async function restoreLocationFields(project) {
   const cfg = project.config || project;
   const remembered = await getRememberedCoordinates();
   const location = getLocationForProject(cfg, remembered);
-  if (useLocationCheckbox) useLocationCheckbox.checked = Boolean(cfg.useLocation);
+  if (useLocationCheckbox) useLocationCheckbox.checked =
+    Boolean(cfg.useLocation && location.source === 'project');
   if (locationNameInput) locationNameInput.value = cfg.locationName || '';
   if (latitudeInput) latitudeInput.value = location.latitude;
   if (longitudeInput) longitudeInput.value = location.longitude;
@@ -1043,6 +1044,7 @@ function attachEventListeners() {
       renderLocationStatus(false, null, false);
       showLocationMessage('', false);
       if (activeProject) {
+        if (e.target.checked) await persistEditedLocation();
         await updateProject(activeProject.id, { useLocation: e.target.checked });
         activeProject.config.useLocation = e.target.checked;
       }
