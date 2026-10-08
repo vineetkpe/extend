@@ -116,7 +116,7 @@
               <button id="btn-clear-location" class="btn btn-outline btn-sm">Reset Location</button>
             </div>
             <div id="location-msg" class="inline-msg"></div>
-            <p class="workbook-location-note">Coordinates simulate browser geolocation only. Google search rankings can still vary by IP address, account, language and personalization. This is not verified Google Maps / GMB position tracking.</p>
+            <p class="workbook-location-note">Valid coordinates are remembered locally until Reset Location. Browser simulation does not change the public IP. Google search rankings can still vary by IP address, account, language and personalization. This is not verified Google Maps / GMB position tracking.</p>
           </div>
         </div>
 
@@ -313,13 +313,18 @@
           <div class="keywords-helper-header">
             <div class="helper-text">
               <h4>20–80 Keyword Batch Management</h4>
-              <p>Paste rows directly from Excel — separators are detected automatically. Format: <code>Keyword [TAB/comma/space] Target URL [TAB/comma/space] Previous Position</code></p>
+              <p>Paste rows with keyword and website columns in any order, or paste a keyword-only list using the optional default target site.</p>
             </div>
             <div class="helper-actions">
               <button id="btn-load-sample" class="btn btn-secondary btn-sm">Load 20 Sample Rows</button>
               <button id="btn-save-keywords" class="btn btn-primary btn-sm">Save Keywords to Project</button>
             </div>
           </div>
+          <div class="workbook-import-controls" style="margin: 12px 0;">
+            <label class="workbook-file-label" for="default-target-site">Default website for keyword-only lists</label>
+            <input id="default-target-site" type="text" placeholder="example.com or https://example.com/" autocomplete="off">
+          </div>
+          <p class="format-hint" style="margin-bottom:10px">Paste any table with headers such as <code>Keyword</code>, <code>Website</code> and <code>Previous Rank</code>, in any order. Extra columns are ignored. Or paste one keyword per line and supply a default website above.</p>
           <div class="textarea-wrapper">
             <textarea id="keywords-textarea" rows="18" placeholder="Paste from Excel or enter:&#10;prompt optimizer   getpromptoptimizer.com   89&#10;best local seo   example.com/seo   12&#10;emergency dentist   example.com/urgent   -"></textarea>
           </div>
@@ -342,14 +347,14 @@
                 Your SEO data is processed locally in this browser session.
               </p>
               <p style="font-size: 13px; color: #d1d5db;">
-                We do not receive or store your keywords, client domains, rankings, locations, or results.
+                We do not receive your keywords, client domains, rankings, locations, or results. Keyword and client data remain in session memory. To prevent re-entry, only your last valid latitude/longitude/accuracy are saved on this device (chrome.storage.local) until Reset Location is clicked.
                 There is NO backend server, NO cloud database, NO analytics, NO telemetry, and NO error-tracking SDK.
               </p>
               <p style="font-size: 13px; color: #d1d5db;">
                 Google search queries are sent directly to Google when rank checking runs.
               </p>
               <p style="margin-bottom: 0; font-size: 13px; color: #9ca3af;">
-                Session data is cleared when the browser session ends. If you want to keep your project for future sessions, use <strong>Export JSON</strong> to save a file locally on your device.
+                Client projects and ranking data are cleared when the browser session ends. Remembered device coordinates remain until Reset Location, including after Clear Session Data. To keep your project for future sessions, use <strong>Export JSON</strong> to save a file locally on your device.
               </p>
             </div>
             <div style="display: flex; gap: 12px; align-items: center;">

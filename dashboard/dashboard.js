@@ -38,6 +38,7 @@ import {
 } from '../utils/projectManager.js';
 
 import { validateCoordinates } from '../utils/locationValidator.js';
+import { getRememberedCoordinates, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
 import {
   LOCATION_STATES,
   isSessionStorageAvailable,
@@ -171,6 +172,7 @@ const el = {
 
   // Keywords Tab
   keywordsTextarea: document.getElementById('keywords-textarea'),
+  defaultTargetSite: document.getElementById('default-target-site'),
   workbookFile: document.getElementById('workbook-file'),
   workbookDate: document.getElementById('workbook-date'),
   workbookStatus: document.getElementById('workbook-import-status'),
@@ -298,7 +300,7 @@ async function refreshProjectsList() {
     el.projectSelect.appendChild(option);
   });
 
-  loadActiveProjectIntoUI(activeProject);
+  await loadActiveProjectIntoUI(activeProject);
 }
 
 /**
@@ -306,18 +308,19 @@ async function refreshProjectsList() {
  * Bug 1 Fix: Explicitly loads that project's exact location configuration.
  * @param {object} proj 
  */
-function loadActiveProjectIntoUI(proj) {
+async function loadActiveProjectIntoUI(proj) {
   if (!proj) return;
   const cfg = proj.config || proj;
 
   el.progProjectName.textContent = `Project: ${cfg.projectName || 'Default Client'}`;
 
   // Geolocation simulation per project
-  el.useLocationToggle.checked = Boolean(cfg.useLocation);
+  const saved = getLocationForProject(cfg, await getRememberedCoordinates());
+  el.useLocationToggle.checked = Boolean(cfg.useLocation && saved.source === 'project');
   el.locName.value = cfg.locationName || '';
-  el.locLat.value = cfg.latitude || '';
-  el.locLon.value = cfg.longitude || '';
-  el.locAcc.value = cfg.accuracy !== undefined ? cfg.accuracy : 20;
+  el.locLat.value = saved.latitude;
+  el.locLon.value = saved.longitude;
+  el.locAcc.value = saved.accuracy;
 
   // Search parameters
   el.googleDomain.value = cfg.googleDomain || 'google.com';
@@ -325,6 +328,7 @@ function loadActiveProjectIntoUI(proj) {
   el.delaySeconds.value = String(cfg.defaultDelaySeconds || 8);
 
   // Keywords
+  if (el.defaultTargetSite) el.defaultTargetSite.value = cfg.domain || '';
   const keywords = proj.keywords || [];
   renderKeywordsTextarea(keywords);
 }
@@ -362,7 +366,7 @@ function renderKeywordsTextarea(keywords) {
  */
 function parseKeywordsFromTextarea() {
   const text = el.keywordsTextarea.value || '';
-  const { valid } = parseInputRows(text);
+  const { valid } = parseInputRows(text, { defaultTargetUrl: el.defaultTargetSite?.value || '' });
   return valid;
 }
 
@@ -381,7 +385,7 @@ function renderKeywordsPreview() {
     return;
   }
 
-  const { valid, errors } = parseInputRows(text);
+  const { valid, errors } = parseInputRows(text, { defaultTargetUrl: el.defaultTargetSite?.value || '' });
   if (el.keywordCountLabel) {
     el.keywordCountLabel.textContent = `${valid.length} keyword(s) detected${errors.length > 0 ? ` (${errors.length} invalid)` : ''}`;
   }
@@ -906,7 +910,7 @@ function setupEventListeners() {
     resetWorkbookImport();
     await setActiveProjectId(selectedId);
     activeProject = await getActiveProject();
-    loadActiveProjectIntoUI(activeProject);
+    await loadActiveProjectIntoUI(activeProject);
     showToast(`Switched to project: ${activeProject.config?.projectName || 'Project'}`, 'info');
   });
 
@@ -1100,9 +1104,34 @@ function setupEventListeners() {
   el.btnCancelConfirm.addEventListener('click', closeConfirmModal);
   el.btnCloseConfirmModal.addEventListener('click', closeConfirmModal);
 
+  async function persistEditedLocation() {
+    if (!activeProject) return;
+    const validation = validateCoordinates(el.locLat.value, el.locLon.value, el.locAcc.value);
+    if (!validation.valid) return;
+    try {
+      const saved = await rememberCoordinates(validation);
+      if (!saved.saved) throw new Error(saved.error);
+      const config = {
+        latitude: String(validation.latitude),
+        longitude: String(validation.longitude),
+        accuracy: validation.accuracy,
+        locationName: el.locName.value.trim()
+      };
+      await updateProject(activeProject.id, config);
+      Object.assign(activeProject.config || activeProject, config);
+    } catch (error) {
+      showToast('Could not remember location: ' + error.message, 'error');
+    }
+  }
+
+  for (const field of [el.locLat, el.locLon, el.locAcc, el.locName]) {
+    field.addEventListener('change', persistEditedLocation);
+  }
+
   // Location Simulation Actions
   el.useLocationToggle.addEventListener('change', async (e) => {
     if (activeProject) {
+      if (e.target.checked) await persistEditedLocation();
       await updateProject(activeProject.id, { useLocation: e.target.checked });
       activeProject.config.useLocation = e.target.checked;
     }
@@ -1121,6 +1150,7 @@ function setupEventListeners() {
     }
 
     try {
+      await persistEditedLocation();
       if (activeProject) {
         await updateProject(activeProject.id, {
           useLocation: true,
@@ -1191,6 +1221,7 @@ function setupEventListeners() {
   el.btnClearLocation.addEventListener('click', async () => {
     try {
       await chrome.runtime.sendMessage({ action: 'RESET_LOCATION' });
+      await forgetRememberedCoordinates();
       el.locLat.value = '';
       el.locLon.value = '';
       el.locName.value = '';
@@ -1243,6 +1274,7 @@ function setupEventListeners() {
       el.locLon.value = inspected.location.longitude;
       el.locName.value = inspected.location.locationName;
       el.locAcc.value = '20';
+      await persistEditedLocation();
     }
     el.workbookStatus.textContent =
       filename + ': ' + inspected.rows.length + ' website keywords imported from "' +
@@ -1348,6 +1380,16 @@ function setupEventListeners() {
     }
   });
 
+  // A single optional website supports plain keyword-only lists. It belongs to
+  // the session project, not device-persistent settings.
+  el.defaultTargetSite.addEventListener('input', renderKeywordsPreview);
+  el.defaultTargetSite.addEventListener('change', async () => {
+    if (activeProject && !pendingWorkbookUpload) {
+      await updateProject(activeProject.id, { domain: el.defaultTargetSite.value.trim() });
+      activeProject.config.domain = el.defaultTargetSite.value.trim();
+    }
+  });
+
   // Keywords Textarea Live Preview & Input
   el.keywordsTextarea.addEventListener('input', () => {
     renderKeywordsPreview();
@@ -1360,9 +1402,13 @@ function setupEventListeners() {
       showToast('Workbook mode uses the original row mapping. Clear the workbook to edit keywords.', 'error');
       return;
     }
-    const { valid, errors } = parseInputRows(el.keywordsTextarea.value || '');
+    const { valid, errors } = parseInputRows(el.keywordsTextarea.value || '', {
+      defaultTargetUrl: el.defaultTargetSite.value.trim()
+    });
     if (errors.length > 0) {
-      showToast(`Warning: ${errors.length} row(s) could not be understood.`, 'warning');
+      showToast('Fix ' + errors.length + ' invalid keyword row(s) before saving.', 'error');
+      renderKeywordsPreview();
+      return;
     }
     await saveProjectKeywords(activeProject.id, valid);
     activeProject.keywords = valid;
@@ -1409,10 +1455,15 @@ function setupEventListeners() {
     }
     const parsed = importedWorkbook
       ? { valid: importedWorkbook.inspected.rows, errors: [] }
-      : parseInputRows(el.keywordsTextarea.value || '');
+      : parseInputRows(el.keywordsTextarea.value || '', {
+          defaultTargetUrl: el.defaultTargetSite.value.trim()
+        });
     const { valid, errors } = parsed;
     if (errors.length > 0) {
-      showToast(`Warning: ${errors.length} invalid row(s) could not be parsed.`, 'warning');
+      showToast('Fix ' + errors.length + ' invalid keyword row(s) before starting.', 'error');
+      document.querySelector('[data-tab="tab-keywords"]')?.click();
+      renderKeywordsPreview();
+      return;
     }
     if (valid.length === 0) {
       showToast('Please enter at least 1 valid keyword row.', 'error');

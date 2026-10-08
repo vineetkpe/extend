@@ -27,6 +27,7 @@ import {
   SESSION_STORAGE_UNAVAILABLE_ERROR
 } from '../utils/storage.js';
 import { validateCoordinates } from '../utils/locationValidator.js';
+import { getRememberedCoordinates, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
 import {
   getProjects,
   getActiveProject,
@@ -81,6 +82,7 @@ let statusBadge = null;
 let alertBanner = null;
 let alertMessage = null;
 let keywordInput = null;
+let defaultTargetSiteInput = null;
 let validationBox = null;
 let popupProjectSelect = null;
 let btnOpenDashboard = null;
@@ -486,7 +488,9 @@ function validateInput() {
     return { valid: [], errors: [] };
   }
 
-  const parsed = parseInputRows(text);
+  const parsed = parseInputRows(text, {
+    defaultTargetUrl: defaultTargetSiteInput?.value || ''
+  });
   if (validationBox) {
     validationBox.classList.remove('hidden');
     validationBox.replaceChildren();
@@ -672,6 +676,46 @@ function saveCurrentSettings() {
 }
 
 /**
+ * Restore the project's last valid coordinates, falling back to the last
+ * device-saved pair for convenience. Never enable another project's location.
+ */
+async function restoreLocationFields(project) {
+  if (!project) return;
+  const cfg = project.config || project;
+  const remembered = await getRememberedCoordinates();
+  const location = getLocationForProject(cfg, remembered);
+  if (useLocationCheckbox) useLocationCheckbox.checked =
+    Boolean(cfg.useLocation && location.source === 'project');
+  if (locationNameInput) locationNameInput.value = cfg.locationName || '';
+  if (latitudeInput) latitudeInput.value = location.latitude;
+  if (longitudeInput) longitudeInput.value = location.longitude;
+  if (accuracyInput) accuracyInput.value = location.accuracy;
+}
+
+/** Save a complete, valid coordinate pair without requiring Apply Location. */
+async function persistEditedLocation() {
+  if (!activeProject) return;
+  const validation = validateCoordinates(
+    latitudeInput?.value, longitudeInput?.value, accuracyInput?.value
+  );
+  if (!validation.valid) return;
+  try {
+    const result = await rememberCoordinates(validation);
+    if (!result.saved) throw new Error(result.error);
+    const config = {
+      latitude: String(validation.latitude),
+      longitude: String(validation.longitude),
+      accuracy: validation.accuracy,
+      locationName: locationNameInput?.value.trim() || ''
+    };
+    await updateProject(activeProject.id, config);
+    Object.assign(activeProject.config || activeProject, config);
+  } catch (error) {
+    showLocationMessage('Could not remember coordinates: ' + error.message, false);
+  }
+}
+
+/**
  * Initializes state by querying the background worker and loading active project
  */
 async function initializeState() {
@@ -704,11 +748,8 @@ async function initializeState() {
     // Bug 1 Fix: Load active project's location into popup UI
     if (activeProject) {
       const cfg = activeProject.config || activeProject;
-      if (useLocationCheckbox) useLocationCheckbox.checked = Boolean(cfg.useLocation);
-      if (locationNameInput) locationNameInput.value = cfg.locationName || '';
-      if (latitudeInput) latitudeInput.value = cfg.latitude || '';
-      if (longitudeInput) longitudeInput.value = cfg.longitude || '';
-      if (accuracyInput) accuracyInput.value = cfg.accuracy !== undefined ? cfg.accuracy : 20;
+      await restoreLocationFields(activeProject);
+      if (defaultTargetSiteInput) defaultTargetSiteInput.value = cfg.domain || '';
 
       if (activeProject.keywords && activeProject.keywords.length > 0 && keywordInput && !keywordInput.value) {
         const lines = activeProject.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
@@ -770,6 +811,17 @@ async function initializeState() {
  * Attaches all event listeners safely
  */
 function attachEventListeners() {
+  // A default website enables pasted single-column keyword lists.
+  if (defaultTargetSiteInput) {
+    defaultTargetSiteInput.addEventListener('input', validateInput);
+    defaultTargetSiteInput.addEventListener('change', async () => {
+      if (!activeProject) return;
+      const domain = defaultTargetSiteInput.value.trim();
+      await updateProject(activeProject.id, { domain });
+      Object.assign(activeProject.config || activeProject, { domain });
+    });
+  }
+
   // 1. Textarea input auto-save
   if (keywordInput) {
     keywordInput.addEventListener('input', () => {
@@ -980,12 +1032,19 @@ function attachEventListeners() {
     });
   }
 
+  // Persist valid coordinates when a field loses focus, so switching views
+  // does not erase a pair that has not yet been applied through CDP.
+  for (const element of [latitudeInput, longitudeInput, accuracyInput, locationNameInput]) {
+    if (element) element.addEventListener('change', persistEditedLocation);
+  }
+
   // 8. Location configuration toggles
   if (useLocationCheckbox) {
     useLocationCheckbox.addEventListener('change', async (e) => {
       renderLocationStatus(false, null, false);
       showLocationMessage('', false);
       if (activeProject) {
+        if (e.target.checked) await persistEditedLocation();
         await updateProject(activeProject.id, { useLocation: e.target.checked });
         activeProject.config.useLocation = e.target.checked;
       }
@@ -1005,6 +1064,7 @@ function attachEventListeners() {
       return;
     }
 
+    await persistEditedLocation();
     if (activeProject) {
       await updateProject(activeProject.id, {
         useLocation: true,
@@ -1076,6 +1136,7 @@ function attachEventListeners() {
 
   bindButton('btnResetLocation', async () => {
     chrome.runtime.sendMessage({ action: 'RESET_LOCATION' }, async () => {
+      await forgetRememberedCoordinates();
       if (latitudeInput) latitudeInput.value = '';
       if (longitudeInput) longitudeInput.value = '';
       if (locationNameInput) locationNameInput.value = '';
@@ -1185,11 +1246,8 @@ function attachEventListeners() {
 
       if (activeProject) {
         const cfg = activeProject.config || activeProject;
-        if (useLocationCheckbox) useLocationCheckbox.checked = Boolean(cfg.useLocation);
-        if (locationNameInput) locationNameInput.value = cfg.locationName || '';
-        if (latitudeInput) latitudeInput.value = cfg.latitude || '';
-        if (longitudeInput) longitudeInput.value = cfg.longitude || '';
-        if (accuracyInput) accuracyInput.value = cfg.accuracy !== undefined ? cfg.accuracy : 20;
+        await restoreLocationFields(activeProject);
+        if (defaultTargetSiteInput) defaultTargetSiteInput.value = cfg.domain || '';
 
         if (activeProject.keywords && activeProject.keywords.length > 0 && keywordInput) {
           const lines = activeProject.keywords.map(k => `${k.keyword}\t${k.targetUrl}\t${k.previousPosition || ''}`);
@@ -1212,6 +1270,7 @@ function initElements() {
   alertBanner = getEl('alertBanner');
   alertMessage = getEl('alertMessage');
   keywordInput = getEl('keywordInput', true);
+  defaultTargetSiteInput = getEl('defaultTargetSite');
   validationBox = getEl('validationBox');
   popupProjectSelect = getEl('popupProjectSelect');
   btnOpenDashboard = getEl('btnOpenDashboard');

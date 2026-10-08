@@ -123,3 +123,13 @@ If something does not appear as expected, inspect the relevant component:
 3. **Google Search Page Content Script**:
    - While a Google search tab is open during checking, press `F12` (or right-click → **Inspect**).
    - In the **Console** tab, inspect DOM and SERP parsing logs.
+
+
+## Flexible keyword input and remembered device coordinates
+
+- Paste TSV/CSV tables with **Keyword**, **Website/Target URL**, and optional **Previous Rank** headers in any order. Extra columns are ignored when recognized headers are supplied.
+- For keyword-only lists, enter a **Default target website** in the dashboard or popup.
+- Uploaded XLSX workbooks can have different worksheet names and header mappings; use manual mapping when automatic detection is not suitable.
+- Valid latitude/longitude/accuracy pairs are retained in `chrome.storage.local` **on this device only** so they survive popup/dashboard switches and browser restarts. The latest pair is a convenient default, **not an automatically enabled client location**.
+- Click **Reset Location** to delete remembered coordinates. **Clear Session Data does not delete that saved device coordinate pair**. Other sensitive client data remains in `chrome.storage.session`; the original workbook remains only in dashboard memory.
+- Chrome's device-geolocation override cannot change an IP address or guarantee Google's actual geographic ranking location.
