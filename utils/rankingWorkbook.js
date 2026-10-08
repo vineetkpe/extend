@@ -109,7 +109,7 @@ function getHeaderMapping(sheet, strings, mapping = {}) {
     if (!keywordColumn || !urlColumn || keywordColumn === urlColumn) continue;
     const dates = Array.from(byColumn, ([column, cell]) => ({
       column, serial: dateSerialForCell(cellValue(cell, strings))
-    })).filter(item => item.column !== keywordColumn && item.column !== urlColumn &&
+    })).filter(item => item.column > Math.max(keywordColumn, urlColumn) &&
       item.serial !== null);
     const latest = dates.length ? dates.reduce((prev, cur) => cur.serial > prev.serial ? cur : prev) : null;
     const firstRankColumn = dates.length ? Math.min(...dates.map(d => d.column)) : Math.max(keywordColumn, urlColumn) + 1;
@@ -181,9 +181,12 @@ export async function inspectRankingWorkbook(bytes, options = {}) {
   const rels = await readXml(zip, 'xl/_rels/workbook.xml.rels');
   const strings = await sharedStringsFor(zip);
   const sheets = allElements(workbook, 'sheet').map(sheet => sheet.getAttribute('name'));
-  const desiredSheet = options.sheetName || (sheets.includes('Keyword Ranking') ? 'Keyword Ranking' : null);
+  const desiredSheet = options.sheetName || null;
   let organicPath = null, header = null, selectedSheet = null, organic = null;
-  const searchSheets = desiredSheet ? [desiredSheet] : sheets;
+  const searchSheets = desiredSheet ? [desiredSheet]
+    : (sheets.includes('Keyword Ranking')
+      ? ['Keyword Ranking', ...sheets.filter(name => name !== 'Keyword Ranking')]
+      : sheets);
   for (const name of searchSheets) {
     const path = sheetPath(workbook, rels, name);
     const doc = await readXml(zip, path);
