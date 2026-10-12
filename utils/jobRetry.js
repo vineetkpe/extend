@@ -44,6 +44,8 @@ export function makeFailedRetryPlan(state) {
       displayPosition: 'NOT CHECKED',
       change: '—',
       checkedDepth: 0,
+      // A row awaiting verification must not offer an audit of old results.
+      organicAudit: [],
       foundUrl: null,
       otherPageFound: null,
       otherPagePosition: null,
