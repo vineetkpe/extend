@@ -35,7 +35,7 @@ import {
 import { getProjects, getActiveProject } from './utils/projectManager.js';
 import { mayStartNewJob, makeFailedRetryPlan } from './utils/jobRetry.js';
 import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/geolocationProof.js';
-import { getVisibleGoogleLocationTab } from './utils/locationPreview.js';
+import { getVisibleGoogleLocationTab, supportedGoogleDomain } from './utils/locationPreview.js';
 import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
@@ -1229,7 +1229,14 @@ function createKeywordErrorResult(item, message) {
 }
 
 async function checkKeywordRanks(item, tabId, settings, runId) {
-  const domain = settings.googleDomain || 'google.com';
+  // Never send a client's keyword to an untrusted URL from project settings.
+  const domain = supportedGoogleDomain(settings?.googleDomain || 'google.com');
+  if (!domain) {
+    return {
+      resultItem: createKeywordErrorResult(item, 'Unsupported Google Search country domain.'),
+      interrupted: false
+    };
+  }
   const maxDepth = Math.max(10, Math.min(100, Number(settings.maxPosition) || 50));
   const normTarget = normalizeUrl(item.targetUrl);
 
@@ -1889,6 +1896,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Merge project config with explicit job request settings
         const reqSettings = settings || {};
         const rawDomain = reqSettings.googleDomain || projectConfig?.googleDomain || 'google.com';
+        const validatedDomain = supportedGoogleDomain(rawDomain);
+        if (!validatedDomain) {
+          sendResponse({
+            success: false,
+            error: 'Unsupported Google Search country domain.',
+            message: 'Select a supported Google Search country domain before starting.'
+          });
+          return;
+        }
         const rawDelay = Math.max(5, parseInt(reqSettings.delaySeconds ?? projectConfig?.defaultDelaySeconds ?? 8, 10) || 8);
         const rawMaxDepth = Math.max(10, parseInt(reqSettings.maxPosition ?? projectConfig?.defaultMaxDepth ?? 50, 10) || 50);
         const useLocation = Boolean(reqSettings.useLocation !== undefined ? reqSettings.useLocation : projectConfig?.useLocation);
@@ -1936,7 +1952,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         // 3. Create complete immutable snapshot of active job settings
         const activeJobSettings = {
-          googleDomain: rawDomain,
+          googleDomain: validatedDomain,
           delaySeconds: rawDelay,
           maxPosition: rawMaxDepth,
           debugMode: Boolean(reqSettings.debugMode),
