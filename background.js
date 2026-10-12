@@ -35,7 +35,7 @@ import {
 import { getProjects, getActiveProject } from './utils/projectManager.js';
 import { mayStartNewJob, makeFailedRetryPlan } from './utils/jobRetry.js';
 import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/geolocationProof.js';
-import { getVisibleGoogleLocationTab } from './utils/locationPreview.js';
+import { getVisibleGoogleLocationTab, isGoogleLocationTab, supportedGoogleDomain } from './utils/locationPreview.js';
 import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
@@ -182,6 +182,14 @@ async function activateVisibleGoogleLocation(location, domain, state) {
   const tabId = opened.tab.id;
   try {
     await applyGeolocationOverride(tabId, location, domain);
+    // A newly opened Google Search tab was loaded before the CDP override.
+    // Reload the SAME search URL under the requested device coordinates,
+    // then verify geolocation on the resulting document, not the old page.
+    const currentTab = await chrome.tabs.get(tabId);
+    if (!isGoogleLocationTab(currentTab, domain)) {
+      throw new Error('Google tab left the expected Search results page.');
+    }
+    await navigateAndWaitForTab(tabId, currentTab.url);
     const check = await verifyPageDeviceLocation(tabId, location);
     if (!check.valid) {
       await clearGeolocationOverride(tabId);
@@ -201,6 +209,7 @@ async function activateVisibleGoogleLocation(location, domain, state) {
       message: 'Browser device coordinates verified in Google tab ' + tabId +
         ': ' + check.reported.latitude + ', ' + check.reported.longitude +
         '. The Google footer may still show your IP-based city. ' +
+        'Device GPS is verified, but Google Search may still choose rankings using IP, account or other signals. ' +
         'Only this tab is overridden; other tabs and your public IP are unchanged.'
     };
   } catch (error) {
@@ -2119,8 +2128,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         const state = await getJobState();
         const prefs = await getPreferences();
-        const domain = (state.jobSettings && state.jobSettings.googleDomain) ||
-          prefs.googleDomain || 'google.com';
+        const requestedDomain = request.googleDomain ||
+          state.jobSettings?.googleDomain || prefs.googleDomain || 'google.com';
+        const domain = supportedGoogleDomain(requestedDomain);
+        if (!domain) {
+          sendResponse({ success: false, error: 'Unsupported Google Search country domain.' });
+          return;
+        }
         const result = await activateVisibleGoogleLocation({
           latitude: validation.latitude,
           longitude: validation.longitude,
@@ -2147,8 +2161,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         const state = await getJobState();
         const prefs = await getPreferences();
-        const domain = (state.jobSettings && state.jobSettings.googleDomain) ||
-          prefs.googleDomain || 'google.com';
+        const requestedDomain = request.googleDomain ||
+          state.jobSettings?.googleDomain || prefs.googleDomain || 'google.com';
+        const domain = supportedGoogleDomain(requestedDomain);
+        if (!domain) {
+          sendResponse({ success: false, error: 'Unsupported Google Search country domain.' });
+          return;
+        }
         const result = await activateVisibleGoogleLocation(validation, domain, state);
         sendResponse(result);
         return;

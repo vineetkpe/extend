@@ -18,8 +18,11 @@ export function isGoogleLocationTab(tab, googleDomain) {
   if (!tab?.id || !tab?.url || !supportedGoogleDomain(googleDomain)) return false;
   try {
     const address = new URL(tab.url);
+    // The location debugger is only for Google Search, not Maps, Finance,
+    // account settings or the Google homepage on the same hostname.
     return address.protocol === 'https:' &&
-      address.hostname.toLowerCase() === 'www.' + googleDomain;
+      address.hostname.toLowerCase() === 'www.' + googleDomain &&
+      address.pathname === '/search';
   } catch (_) {
     return false;
   }

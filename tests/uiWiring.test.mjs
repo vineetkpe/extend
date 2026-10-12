@@ -69,3 +69,29 @@ test('popup and dashboard capture starting project ID before asynchronous worker
     assert.match(source, /saveProjectKeywords\(startedProjectId,/);
   }
 });
+
+
+test('both location editors save on input before the popup can close on blur', () => {
+  const popup = read('popup/popup.js');
+  const dashboard = read('dashboard/dashboard.js');
+  assert.match(popup, /element\.addEventListener\('input', persistEditedLocation\)/);
+  assert.match(dashboard, /field\.addEventListener\('input', persistEditedLocation\)/);
+  for (const source of [popup, dashboard]) {
+    assert.match(source, /rememberCoordinateDraft\(/);
+    assert.match(source, /getRememberedCoordinateDraft\(/);
+    assert.match(source, /locationDraftEdited: true/);
+  }
+});
+
+test('popup and dashboard describe exactly which three keyword columns to paste', () => {
+  const popup = read('popup/popup.html');
+  const dashboard = read('dashboard/dashboard.html');
+  assert.match(popup, /1\. Keyword \/ search phrase/);
+  assert.match(popup, /2\. Target website URL/);
+  assert.match(popup, /3\. Previous organic rank \(optional\)/);
+  assert.match(dashboard, /Column 1: Keyword \/ search phrase/);
+  assert.match(dashboard, /Column 2: Target website \/ landing page URL/);
+  assert.match(dashboard, /Column 3: Previous organic rank \(optional\)/);
+  assert.match(popup, /aria-describedby="keywordColumnGuide"/);
+  assert.match(dashboard, /aria-describedby="dashboardKeywordColumnGuide"/);
+});
