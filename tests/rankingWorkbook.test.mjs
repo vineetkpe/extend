@@ -330,3 +330,69 @@ test('blank client latitude or longitude does not silently become 0,0', async ()
   assert.equal(inspected.location.latitude, '');
   assert.equal(inspected.location.longitude, '');
 });
+
+
+test('1904-date workbooks import the actual calendar dates and export matching serials', async () => {
+  const files = fixtureFiles();
+  files['xl/workbook.xml'] = files['xl/workbook.xml'].replace(
+    '<sheets>', '<workbookPr date1904="1"/><sheets>');
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replaceAll('<v>46300</v>', '<v>44838</v>')
+    .replaceAll('<v>46293</v>', '<v>44831</v>');
+  const bytes = zipStored(files);
+  const inspected = await inspectRankingWorkbook(bytes);
+  assert.equal(inspected.date1904, true);
+  assert.equal(inspected.latestDate, '2026-10-05');
+  assert.equal(inspected.latestDateSerial, 44838);
+  assert.deepEqual(inspected.rows.map(row => row.previousPosition), [4, '-']);
+  await assert.rejects(
+    () => buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-05'),
+    /later than the latest existing ranking date/
+  );
+
+  const updated = await buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-08');
+  const exported = new WorkbookZip(await updated.arrayBuffer());
+  const doc = new DOMParser().parseFromString(
+    td.decode(await exported.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G9')), '44841');
+  assert.equal(cellValue(c(doc, 'H9')), '44838');
+  assert.equal(cellValue(c(doc, 'I9')), '44831');
+  assert.equal(cellValue(c(doc, 'G2')), '44841');
+  assert.equal(td.decode(await exported.read('xl/workbook.xml')), files['xl/workbook.xml']);
+
+  const reimported = await inspectRankingWorkbook(new Uint8Array(await updated.arrayBuffer()));
+  assert.equal(reimported.date1904, true);
+  assert.equal(reimported.latestDate, '2026-10-08');
+});
+
+test('1904-date workbooks interpret string date headers in the same epoch', async () => {
+  const files = fixtureFiles();
+  files['xl/workbook.xml'] = files['xl/workbook.xml'].replace(
+    '<sheets>', '<workbookPr date1904="true"/><sheets>');
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replaceAll('<v>46300</v>', '<v>44838</v>')
+    .replaceAll('<v>46293</v>', '<v>44831</v>')
+    .replace('<c r="G9" s="26"><v>44838</v></c>',
+      '<c r="G9" t="inlineStr"><is><t>2026-10-05</t></is></c>');
+  const bytes = zipStored(files);
+  const inspected = await inspectRankingWorkbook(bytes);
+  assert.equal(inspected.date1904, true);
+  assert.equal(inspected.latestDateSerial, 44838);
+  assert.equal(inspected.latestDate, '2026-10-05');
+  const output = await buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-08');
+  const zip = new WorkbookZip(await output.arrayBuffer());
+  const doc = new DOMParser().parseFromString(
+    td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G9')), '44841');
+});
+
+test('workbooks without date1904 keep the 1900-date system unchanged', async () => {
+  const { bytes, inspected } = await fixture();
+  assert.equal(inspected.date1904, false);
+  assert.equal(inspected.latestDateSerial, 46300);
+  const updated = await buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-08');
+  const zip = new WorkbookZip(await updated.arrayBuffer());
+  const doc = new DOMParser().parseFromString(
+    td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G9')), '46303');
+});

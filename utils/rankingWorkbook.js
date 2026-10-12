@@ -10,6 +10,13 @@ const MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+// Excel's 1904 date system stores the same calendar date 1,462 days
+// earlier than the standard 1900 system.
+const DATE_1904_OFFSET = 1462;
+function workbookUses1904Dates(workbook) {
+  const prop = allElements(workbook, 'workbookPr')[0];
+  return /^(1|true)$/i.test(prop?.getAttribute('date1904') || '');
+}
 
 function xmlChildren(parent, tag) {
   return Array.from(parent?.childNodes || []).filter(child =>
@@ -80,7 +87,7 @@ async function sharedStringsFor(zip) {
 const KEYWORD_HEADERS = new Set(['keyword', 'keywords', 'search term', 'search terms', 'search query', 'query', 'target keyword', 'target keywords']);
 const URL_HEADERS = new Set(['landing page', 'landing page url', 'target url', 'target page', 'page url', 'website url', 'site url', 'url', 'website', 'domain', 'target domain', 'web page']);
 
-function dateSerialForCell(value) {
+function dateSerialForCell(value, date1904 = false) {
   if (typeof value === 'number' && value > 40000 && value < 80000) return value;
   if (typeof value !== 'string') return null;
   const cleaned = value.trim();
@@ -90,10 +97,11 @@ function dateSerialForCell(value) {
     const [a, b, year] = cleaned.split(/[/-]/).map(Number);
     parsed = Date.UTC(year, a - 1, b);
   }
-  return Number.isFinite(parsed) ? Math.floor(parsed / 86400000) + 25569 : null;
+  return Number.isFinite(parsed)
+    ? Math.floor(parsed / 86400000) + 25569 - (date1904 ? DATE_1904_OFFSET : 0) : null;
 }
 
-function getHeaderMapping(sheet, strings, mapping = {}) {
+function getHeaderMapping(sheet, strings, mapping = {}, date1904 = false) {
   const rows = allElements(sheet, 'row');
   for (const row of rows) {
     const rowNumber = Number(row.getAttribute('r'));
@@ -108,7 +116,7 @@ function getHeaderMapping(sheet, strings, mapping = {}) {
     }
     if (!keywordColumn || !urlColumn || keywordColumn === urlColumn) continue;
     const dates = Array.from(byColumn, ([column, cell]) => ({
-      column, serial: dateSerialForCell(cellValue(cell, strings))
+      column, serial: dateSerialForCell(cellValue(cell, strings), date1904)
     })).filter(item => item.column > Math.max(keywordColumn, urlColumn) &&
       item.serial !== null);
     const latest = dates.length ? dates.reduce((prev, cur) => cur.serial > prev.serial ? cur : prev) : null;
@@ -125,16 +133,19 @@ function getHeaderMapping(sheet, strings, mapping = {}) {
   }
   throw new Error('Unable to detect keyword and website URL columns. Choose the worksheet and map the two columns.');
 }
-function excelSerial(dateString) {
+function excelSerial(dateString, date1904 = false) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateString)) throw new Error('Select a valid YYYY-MM-DD ranking date.');
   const timestamp = Date.parse(dateString + 'T00:00:00Z');
   if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== dateString) {
     throw new Error('Select a valid ranking date.');
   }
-  return Math.floor(timestamp / 86400000) + 25569;
+  return Math.floor(timestamp / 86400000) + 25569 -
+    (date1904 ? DATE_1904_OFFSET : 0);
 }
-function excelDate(serial) {
-  return new Date(Math.round((serial - 25569) * 86400000)).toISOString().slice(0, 10);
+function excelDate(serial, date1904 = false) {
+  return new Date(Math.round(
+    (serial + (date1904 ? DATE_1904_OFFSET : 0) - 25569) * 86400000
+  )).toISOString().slice(0, 10);
 }
 function getClientLocation(clientDoc, strings) {
   const values = {};
@@ -183,6 +194,7 @@ export async function listRankingWorkbookSheets(bytes) {
 export async function inspectRankingWorkbook(bytes, options = {}) {
   const zip = new WorkbookZip(bytes);
   const workbook = await readXml(zip, 'xl/workbook.xml');
+  const date1904 = workbookUses1904Dates(workbook);
   const rels = await readXml(zip, 'xl/_rels/workbook.xml.rels');
   const strings = await sharedStringsFor(zip);
   const sheets = allElements(workbook, 'sheet').map(sheet => sheet.getAttribute('name'));
@@ -196,7 +208,7 @@ export async function inspectRankingWorkbook(bytes, options = {}) {
     const path = sheetPath(workbook, rels, name);
     const doc = await readXml(zip, path);
     try {
-      const candidate = getHeaderMapping(doc, strings, options);
+      const candidate = getHeaderMapping(doc, strings, options, date1904);
       organicPath = path;
       organic = doc;
       header = candidate;
@@ -245,7 +257,8 @@ export async function inspectRankingWorkbook(bytes, options = {}) {
     rows,
     location,
     hasGmbSheet,
-    latestDate: header.latestDateSerial ? excelDate(header.latestDateSerial) : null,
+    latestDate: header.latestDateSerial ? excelDate(header.latestDateSerial, date1904) : null,
+    date1904,
     latestDateSerial: header.latestDateSerial,
     organicSheet: organicPath,
     sheetName: selectedSheet,
@@ -331,7 +344,7 @@ function rankingValue(result) {
  * left of the history, and only organic keyword result rows receive ranks.
  */
 export async function buildUpdatedRankingWorkbook(bytes, inspected, results, asOfDate) {
-  const dateValue = excelSerial(asOfDate);
+  const dateValue = excelSerial(asOfDate, inspected.date1904);
   if (inspected.latestDateSerial && dateValue <= inspected.latestDateSerial) {
     throw new Error('The new check date must be later than the latest existing ranking date (' + inspected.latestDate + ').');
   }
