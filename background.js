@@ -37,6 +37,9 @@ import { mayStartNewJob, makeFailedRetryPlan } from './utils/jobRetry.js';
 import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/geolocationProof.js';
 import { getVisibleGoogleLocationTab, isGoogleLocationTab, supportedGoogleDomain } from './utils/locationPreview.js';
 import { getSafeRankSearchTab } from './utils/rankSearchTab.js';
+import {
+  applyScopedSearchLocation, clearScopedSearchLocation
+} from './utils/googleSearchLocationSignal.js';
 import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
@@ -49,12 +52,18 @@ let jobAdmissionBusy = false;
 // Debugger session management for Geolocation CDP Override
 let activeDebuggerTabId = null;
 let activeAppliedLocation = null; // { latitude, longitude, accuracy, tabId }
+let switchingLocationToTabId = null; // Ignore late detach events from prior client tabs.
+const intentionallyDetachedTabs = new Set(); // Reset/switch should not trigger a false failure.
 
 // The worker's module scope is recreated after Chrome suspends/terminates it.
 // Reconcile persisted RUNNING state before processing any incoming events.
 // Never auto-resume: the in-flight SERP and debugger state are no longer trusted.
 const workerRecoveryPromise = reconcileWorkerRestart(getJobState, saveJobState);
-workerRecoveryPromise.catch(error => {
+workerRecoveryPromise.then(async reconciled => {
+  // A restarted worker cannot trust an old debugger or the X-Geo rule left
+  // installed during the interrupted run. Pause, then clear its location hint.
+  if (reconciled) await clearScopedSearchLocation(chrome.declarativeNetRequest);
+}).catch(error => {
   console.error('[LRC Recovery] Failed to reconcile interrupted job:', error);
 });
 
@@ -108,10 +117,12 @@ function attachDebugger(target) {
  * @returns {Promise<void>}
  */
 function detachDebugger(target) {
+  intentionallyDetachedTabs.add(target.tabId);
   return new Promise((resolve) => {
     chrome.debugger.detach(target, () => {
       if (chrome.runtime.lastError) {
-        // Tab already closed or already detached
+        // A failed detach will not have generated an intentional onDetach.
+        intentionallyDetachedTabs.delete(target.tabId);
       }
       resolve();
     });
@@ -209,8 +220,8 @@ async function activateVisibleGoogleLocation(location, domain, state) {
       reported: check.reported,
       message: 'Browser device coordinates verified in Google tab ' + tabId +
         ': ' + check.reported.latitude + ', ' + check.reported.longitude +
-        '. The Google footer may still show your IP-based city. ' +
-        'Device GPS is verified, but Google Search may still choose rankings using IP, account or other signals. ' +
+        '. Client GPS is verified and the X-Geo Search header is configured for this tab only. ' +
+        'The Google footer may still show your IP-based city. Google may use IP, account or other signals for rankings. ' +
         'Only this tab is overridden; other tabs and your public IP are unchanged.'
     };
   } catch (error) {
@@ -232,6 +243,14 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
     throw new Error(validation.error || 'Invalid coordinates for geolocation override.');
   }
 
+  // Apply the same client coordinates to Google's Search request itself.
+  // Session-only rule: exact Search URL, exact Google country, one tab ID.
+  // Installing before navigation makes it effective on the next Search load.
+  await applyScopedSearchLocation(
+    chrome.declarativeNetRequest, tabId, googleDomain, validation
+  );
+
+  switchingLocationToTabId = tabId;
   const target = { tabId };
 
   // If already attached to a different tab, detach first
@@ -243,6 +262,7 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
   // Attach to tab if not already attached
   if (activeDebuggerTabId !== tabId) {
     try {
+      intentionallyDetachedTabs.delete(tabId);
       await attachDebugger(target);
       activeDebuggerTabId = tabId;
       await debugLog(`[LRC Debugger] Attached to tab ${tabId}`);
@@ -303,6 +323,7 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
     }
   });
 
+  switchingLocationToTabId = null;
   return { success: true, coords: validation };
 }
 
@@ -312,6 +333,8 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
  * @returns {Promise<void>}
  */
 async function clearGeolocationOverride(tabId = null) {
+  // Reset the Google request-location hint as well as the browser GPS.
+  await clearScopedSearchLocation(chrome.declarativeNetRequest);
   const targetId = tabId || activeDebuggerTabId;
   if (targetId) {
     try {
@@ -338,6 +361,7 @@ async function clearGeolocationOverride(tabId = null) {
     status: LOCATION_STATES.NOT_CONFIGURED
   });
 
+  switchingLocationToTabId = null;
   await debugLog('[LRC Debugger] Geolocation override cleared and debugger detached.');
 }
 
@@ -352,6 +376,17 @@ async function clearGeolocationOverride(tabId = null) {
 chrome.debugger.onDetach.addListener(async (source, reason) => {
   const tabId = source && source.tabId;
   const isOurDebuggerTab = Boolean(activeDebuggerTabId && activeDebuggerTabId === tabId);
+
+  // Chrome fires onDetach even after an extension intentionally detaches.
+  // Never mark an intentional Reset Location or client switch as failure.
+  if (intentionallyDetachedTabs.delete(tabId)) return;
+
+  // Detaching the old client tab is expected while installing a new one.
+  // Its delayed onDetach event must not remove the NEW tab's X-Geo rule.
+  if ((switchingLocationToTabId && switchingLocationToTabId !== tabId) ||
+      (activeDebuggerTabId && activeDebuggerTabId !== tabId)) {
+    return;
+  }
 
   // Invalidate in-memory tracker if it was our tab
   if (isOurDebuggerTab) {
@@ -372,6 +407,7 @@ chrome.debugger.onDetach.addListener(async (source, reason) => {
       return; // Detach event from an unrelated tab
     }
 
+    await clearScopedSearchLocation(chrome.declarativeNetRequest);
     const jobRequiresLocation = Boolean(currentState.jobSettings && currentState.jobSettings.useLocation);
 
     const locationUpdates = {
@@ -1012,7 +1048,17 @@ async function ensureLocationApplied(tabId, runId, settings) {
     activeDebuggerTabId === tabId &&
     isLocationFingerprintMatch(activeAppliedLocation, tabId, coordsValidation.latitude, coordsValidation.longitude, coordsValidation.accuracy)
   ) {
-    return { success: true, applied: true };
+    try {
+      // A service-worker suspension or a removed session rule must not let
+      // a rank-check proceed on GPS alone without the Google location hint.
+      await applyScopedSearchLocation(
+        chrome.declarativeNetRequest, tabId, settings.googleDomain || 'google.com',
+        coordsValidation
+      );
+      return { success: true, applied: true };
+    } catch (error) {
+      return { success: false, applied: false, error: error.message };
+    }
   }
 
   // Need to apply or reapply
@@ -1028,6 +1074,8 @@ async function ensureLocationApplied(tabId, runId, settings) {
     return { success: true, applied: true };
   } catch (err) {
     console.error('[LRC] ensureLocationApplied failed:', err);
+    await clearScopedSearchLocation(chrome.declarativeNetRequest);
+    switchingLocationToTabId = null;
     activeAppliedLocation = null;
     await saveJobState({
       locationApplied: false,
@@ -1937,6 +1985,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           }
         }
 
+        // Turning location off must clear both GPS and X-Geo; otherwise a
+        // previous client's coordinates could influence an ordinary search.
+        if (!useLocation) await clearGeolocationOverride();
+
         // 3. Create complete immutable snapshot of active job settings
         const activeJobSettings = {
           googleDomain: validatedDomain,
@@ -2087,6 +2139,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       if (request.action === 'CLEAR_SESSION_DATA') {
         activeRunId = null;
+        await clearScopedSearchLocation(chrome.declarativeNetRequest);
         if (activeDebuggerTabId) {
           try {
             await sendDebuggerCommand({ tabId: activeDebuggerTabId }, 'Emulation.clearGeolocationOverride', {});
@@ -2183,6 +2236,7 @@ chrome.tabs.onRemoved.addListener(async (closedTabId) => {
     await workerRecoveryPromise;
     const state = await getJobState();
     if (state.searchTabId === closedTabId) {
+      await clearScopedSearchLocation(chrome.declarativeNetRequest);
       await saveJobState({ searchTabId: null, locationApplied: false, locationTabId: null });
     }
     if (activeDebuggerTabId === closedTabId) {

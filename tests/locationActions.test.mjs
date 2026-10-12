@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { STORAGE_KEYS } from '../utils/storage.js';
 
-function makeMockBrowser({ denied = false, mismatchedDeviceLocation = false } = {}) {
+function makeMockBrowser({ denied = false, mismatchedDeviceLocation = false,
+  headerFails = false, emitDetachEvents = false } = {}) {
   const stored = {};
   const tabsById = new Map();
   const listeners = new Set();
@@ -11,6 +12,7 @@ function makeMockBrowser({ denied = false, mismatchedDeviceLocation = false } = 
   const handlers = {};
   let nextTabId = 50;
   let reported = null;
+  let sessionRules = [];
 
   globalThis.chrome = {
     storage: {
@@ -28,10 +30,24 @@ function makeMockBrowser({ denied = false, mismatchedDeviceLocation = false } = 
       onMessage: { addListener(fn) { handlers.onMessage = fn; } },
       async sendMessage() {}
     },
+    declarativeNetRequest: {
+      async updateSessionRules({ removeRuleIds, addRules = [] }) {
+        commands.push(['xgeoRules', removeRuleIds, structuredClone(addRules)]);
+        if (headerFails) throw new Error('Could not install Google X-Geo header');
+        sessionRules = sessionRules.filter(r => !removeRuleIds.includes(r.id)).concat(addRules);
+      },
+      async getSessionRules() { return structuredClone(sessionRules); }
+    },
     debugger: {
-      onDetach: { addListener() {} },
+      onDetach: { addListener(fn) { handlers.onDetach = fn; } },
       attach(target, version, cb) { commands.push(['attach', target.tabId]); cb(); },
-      detach(target, cb) { commands.push(['detach', target.tabId]); cb(); },
+      detach(target, cb) {
+        commands.push(['detach', target.tabId]);
+        cb();
+        if (emitDetachEvents) {
+          queueMicrotask(() => handlers.onDetach?.(target, 'canceled_by_user'));
+        }
+      },
       sendCommand(target, method, params, cb) {
         commands.push([method, target.tabId]);
         if (method === 'Emulation.setGeolocationOverride') {
@@ -90,7 +106,10 @@ function makeMockBrowser({ denied = false, mismatchedDeviceLocation = false } = 
       assert.equal(keepsOpen, true);
     });
   }
-  return { send, startWorker, commands, removed, tabsById, stored };
+  return {
+    send, startWorker, commands, removed, tabsById, stored,
+    getLocationRules: () => structuredClone(sessionRules)
+  };
 }
 
 test('TEST_LOCATION creates visible persistent Google tab, verifies device coordinates and reuses it', async () => {
@@ -243,4 +262,118 @@ test('invalid Google domain cannot be used for location debugger', async () => {
   assert.match(result.error, /unsupported Google Search country domain/i);
   assert.equal(browser.tabsById.size, 0);
   assert.equal(browser.commands.some(entry => entry[0] === 'attach'), false);
+});
+
+
+test('client X-Geo header is installed before Google reload, GPS applied and checked afterwards', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('client-xgeo-before-reload');
+  const result = await browser.send({
+    action: 'APPLY_LOCATION', googleDomain: 'google.com',
+    location: { latitude: 39.7946857, longitude: -105.0654264, accuracy: 20 }
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.verified, true);
+  const rules = browser.getLocationRules();
+  assert.equal(rules.length, 1);
+  assert.deepEqual(rules[0].condition.tabIds, [result.tabId]);
+  assert.equal(new RegExp(rules[0].condition.regexFilter).test(
+    'https://www.google.com/search?q=surface+repair'), true);
+  const decoded = atob(rules[0].action.requestHeaders[0].value.slice(2));
+  assert.match(decoded, /latitude_e7: 397946857/);
+  assert.match(decoded, /longitude_e7: -1050654264/);
+  const actions = browser.commands.map(row => row[0]);
+  assert.ok(actions.indexOf('xgeoRules') < actions.indexOf('Emulation.setGeolocationOverride'));
+  assert.ok(actions.lastIndexOf('navigate') > actions.indexOf('Emulation.setGeolocationOverride'));
+  assert.ok(actions.indexOf('Runtime.evaluate') > actions.lastIndexOf('navigate'));
+});
+
+test('changing clients replaces the old tab-only X-Geo hint rather than affecting other tabs', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('client-xgeo-switch');
+  const first = await browser.send({
+    action: 'TEST_LOCATION', googleDomain: 'google.com',
+    location: { latitude: 39.7946857, longitude: -105.0654264, accuracy: 20 }
+  });
+  assert.equal(first.success, true);
+  const old = browser.getLocationRules()[0];
+  const second = await browser.send({
+    action: 'APPLY_LOCATION', googleDomain: 'google.co.in',
+    location: { latitude: 28.6139, longitude: 77.209, accuracy: 20 }
+  });
+  assert.equal(second.success, true);
+  assert.notEqual(second.tabId, first.tabId);
+  const rules = browser.getLocationRules();
+  assert.equal(rules.length, 1);
+  assert.deepEqual(rules[0].condition.tabIds, [second.tabId]);
+  assert.notEqual(rules[0].action.requestHeaders[0].value,
+    old.action.requestHeaders[0].value);
+  assert.equal(browser.tabsById.get(first.tabId).url.startsWith(
+    'https://www.google.com/search'), true);
+});
+
+test('Reset Location removes Google X-Geo and browser GPS together', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('client-xgeo-reset');
+  const applied = await browser.send({
+    action: 'APPLY_LOCATION', googleDomain: 'google.com',
+    location: { latitude: 38.8, longitude: -77.1, accuracy: 20 }
+  });
+  assert.equal(applied.success, true);
+  assert.equal(browser.getLocationRules().length, 1);
+  const reset = await browser.send({ action: 'RESET_LOCATION' });
+  assert.equal(reset.success, true);
+  assert.deepEqual(browser.getLocationRules(), []);
+  assert.ok(browser.commands.some(row => row[0] === 'Emulation.clearGeolocationOverride'));
+  assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationApplied, false);
+});
+
+test('X-Geo installation failures do not report verified client location', async () => {
+  const browser = makeMockBrowser({ headerFails: true });
+  await browser.startWorker('client-xgeo-error');
+  const result = await browser.send({
+    action: 'APPLY_LOCATION', googleDomain: 'google.com',
+    location: { latitude: 38.8, longitude: -77.1, accuracy: 20 }
+  });
+  assert.equal(result.success, false);
+  assert.match(result.error, /Could not install Google X-Geo header/);
+  assert.equal(browser.commands.some(row => row[0] === 'Emulation.setGeolocationOverride'), false);
+  assert.deepEqual(browser.getLocationRules(), []);
+});
+
+
+test('switching client Google tabs ignores intentionally detached old debugger', async () => {
+  const browser = makeMockBrowser({ emitDetachEvents: true });
+  await browser.startWorker('client-xgeo-late-detach');
+  const first = await browser.send({
+    action: 'APPLY_LOCATION', googleDomain: 'google.com',
+    location: { latitude: 40.7128, longitude: -74.006, accuracy: 20 }
+  });
+  assert.equal(first.success, true);
+  const next = await browser.send({
+    action: 'APPLY_LOCATION', googleDomain: 'google.co.in',
+    location: { latitude: 28.6139, longitude: 77.209, accuracy: 20 }
+  });
+  assert.equal(next.success, true);
+  assert.notEqual(next.tabId, first.tabId);
+  await Promise.resolve();
+  assert.equal(browser.getLocationRules().length, 1);
+  assert.deepEqual(browser.getLocationRules()[0].condition.tabIds, [next.tabId]);
+  assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationApplied, true);
+  assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationState, 'ACTIVE');
+});
+
+test('Reset Location is not mistaken for unexpected debugger loss', async () => {
+  const browser = makeMockBrowser({ emitDetachEvents: true });
+  await browser.startWorker('client-xgeo-reset-detach');
+  const apply = await browser.send({
+    action: 'APPLY_LOCATION', googleDomain: 'google.com',
+    location: { latitude: 40.7128, longitude: -74.006, accuracy: 20 }
+  });
+  assert.equal(apply.success, true);
+  const reset = await browser.send({ action: 'RESET_LOCATION' });
+  assert.equal(reset.success, true);
+  await Promise.resolve();
+  assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationState, 'NOT CONFIGURED');
+  assert.deepEqual(browser.getLocationRules(), []);
 });
