@@ -377,7 +377,7 @@ function renderResultsTable(results) {
     tdPrev.textContent = String(r.previousPosition || '-');
     tr.appendChild(tdPrev);
 
-    const display = describePopupResult(r);
+    const display = describePopupResult(r, currentJobState?.status);
 
     // 4. Current organic rank: never label an unverified row Not Found.
     const tdCur = document.createElement('td');
