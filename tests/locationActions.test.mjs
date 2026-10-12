@@ -374,6 +374,6 @@ test('Reset Location is not mistaken for unexpected debugger loss', async () => 
   const reset = await browser.send({ action: 'RESET_LOCATION' });
   assert.equal(reset.success, true);
   await Promise.resolve();
-  assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationState, 'NOT_CONFIGURED');
+  assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationState, 'NOT CONFIGURED');
   assert.deepEqual(browser.getLocationRules(), []);
 });
