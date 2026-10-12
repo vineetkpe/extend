@@ -38,7 +38,7 @@ import {
 } from '../utils/projectManager.js';
 
 import { validateCoordinates } from '../utils/locationValidator.js';
-import { getRememberedCoordinates, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
+import { getRememberedCoordinates, getRememberedCoordinateDraft, rememberCoordinateDraft, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
 import {
   LOCATION_STATES,
   isSessionStorageAvailable,
@@ -315,7 +315,10 @@ async function loadActiveProjectIntoUI(proj) {
   el.progProjectName.textContent = `Project: ${cfg.projectName || 'Default Client'}`;
 
   // Geolocation simulation per project
-  const saved = getLocationForProject(cfg, await getRememberedCoordinates());
+  const [remembered, draft] = await Promise.all([
+    getRememberedCoordinates(), getRememberedCoordinateDraft()
+  ]);
+  const saved = getLocationForProject(cfg, remembered, draft);
   el.useLocationToggle.checked = Boolean(cfg.useLocation && saved.source === 'project');
   el.locName.value = cfg.locationName || '';
   el.locLat.value = saved.latitude;
@@ -1203,26 +1206,30 @@ function setupEventListeners() {
   el.btnCloseConfirmModal.addEventListener('click', closeConfirmModal);
 
   async function persistEditedLocation() {
-    if (!activeProject) return;
-    const validation = validateCoordinates(el.locLat.value, el.locLon.value, el.locAcc.value);
-    if (!validation.valid) return;
+    const project = activeProject;
+    const latitude = el.locLat.value.trim();
+    const longitude = el.locLon.value.trim();
+    const accuracy = el.locAcc.value.trim() || '20';
+    const config = {
+      latitude, longitude, accuracy,
+      locationName: el.locName.value.trim(),
+      locationDraftEdited: true
+    };
+    if (project) Object.assign(project.config || project, config);
     try {
-      const saved = await rememberCoordinates(validation);
-      if (!saved.saved) throw new Error(saved.error);
-      const config = {
-        latitude: String(validation.latitude),
-        longitude: String(validation.longitude),
-        accuracy: validation.accuracy,
-        locationName: el.locName.value.trim()
-      };
-      await updateProject(activeProject.id, config);
-      Object.assign(activeProject.config || activeProject, config);
+      const draftSaved = await rememberCoordinateDraft({ latitude, longitude, accuracy });
+      if (!draftSaved.saved) return;
+      if (project) await updateProject(project.id, config);
+      const validation = validateCoordinates(latitude, longitude, accuracy);
+      if (validation.valid) await rememberCoordinates(validation);
     } catch (error) {
       showToast('Could not remember location: ' + error.message, 'error');
     }
   }
 
   for (const field of [el.locLat, el.locLon, el.locAcc, el.locName]) {
+    // Save before blur, including incomplete coordinate pairs.
+    field.addEventListener('input', persistEditedLocation);
     field.addEventListener('change', persistEditedLocation);
   }
 
