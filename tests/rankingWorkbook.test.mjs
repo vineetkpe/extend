@@ -332,6 +332,81 @@ test('blank client latitude or longitude does not silently become 0,0', async ()
 });
 
 
+test('imports previous rankings stored as inline or shared numeric text', async () => {
+  const files = fixtureFiles();
+  files['xl/sharedStrings.xml'] = files['xl/sharedStrings.xml']
+    .replace('</sst>', '<si><t> 12 </t></si></sst>');
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace('<c r="G10" s="82"><v>4</v></c>',
+      '<c r="G10" s="82" t="inlineStr"><is><t>007</t></is></c>')
+    .replace('<c r="G11" s="82" t="s"><v>5</v></c>',
+      '<c r="G11" s="82" t="s"><v>11</v></c>');
+  const inspected = await inspectRankingWorkbook(zipStored(files));
+  assert.deepEqual(inspected.rows.map(row => row.previousPosition), [7, 12]);
+  assert.equal(inspected.latestDate, '2026-10-05');
+});
+
+test('malformed numeric text does not fabricate previous ranks in XLSX import', async () => {
+  for (const value of ['12.5', '12abc', '1e3', '0', '9007199254740993']) {
+    const files = fixtureFiles();
+    files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+      .replace('<c r="G10" s="82"><v>4</v></c>',
+        '<c r="G10" s="82" t="inlineStr"><is><t>' + value + '</t></is></c>');
+    const inspected = await inspectRankingWorkbook(zipStored(files));
+    assert.equal(inspected.rows[0].previousPosition, '-', value);
+  }
+});
+
+test('fractional numeric XLSX cells cannot be treated as exact previous positions', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace('<c r="G10" s="82"><v>4</v></c>',
+      '<c r="G10" s="82"><v>4.5</v></c>');
+  const inspected = await inspectRankingWorkbook(zipStored(files));
+  assert.equal(inspected.rows[0].previousPosition, '-');
+});
+
+
+test('XLSX export never promotes stale or unverified ranking data', async () => {
+  const { bytes, inspected } = await fixture();
+  const cases = [
+    [{ status: 'NOT CHECKED', currentPosition: 4 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', matchStatus: 'NOT_CHECKED', currentPosition: 4 }, 'NOT CHECKED'],
+    [{ status: 'ERROR', currentPosition: 4 }, 'ERROR'],
+    [{ matchStatus: 'ERROR', currentPosition: 'Not Found' }, 'ERROR'],
+    [{ currentPosition: 'Not Found' }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', currentPosition: 0 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', currentPosition: 1.5 }, 'NOT CHECKED'],
+    [{ status: 'TARGET PAGE NOT FOUND', currentPosition: 8 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', matchStatus: 'TARGET PAGE NOT FOUND', currentPosition: 8 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', matchStatus: 'TARGET PAGE NOT FOUND', currentPosition: 'Not Found' }, 'NOT CHECKED']
+  ];
+  for (const [details, expected] of cases) {
+    const result = { id: 'workbook_row_10', ...details };
+    const blob = await buildUpdatedRankingWorkbook(bytes, inspected, [result], '2026-10-08');
+    const zip = new WorkbookZip(await blob.arrayBuffer());
+    const doc = new DOMParser().parseFromString(
+      td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+    assert.equal(cellValue(c(doc, 'G10')), expected, JSON.stringify(details));
+    // A different keyword's historic rank must stay untouched.
+    assert.equal(cellValue(c(doc, 'H11')), '5');
+  }
+});
+
+test('XLSX export continues to record verified rankings and verified absences', async () => {
+  const { bytes, inspected } = await fixture();
+  const blob = await buildUpdatedRankingWorkbook(bytes, inspected, [
+    { id: 'workbook_row_10', currentPosition: 7, matchStatus: 'EXACT PAGE' },
+    { id: 'workbook_row_11', currentPosition: 'Not Found', matchStatus: 'OTHER DOMAIN PAGE FOUND' }
+  ], '2026-10-08');
+  const zip = new WorkbookZip(await blob.arrayBuffer());
+  const doc = new DOMParser().parseFromString(
+    td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G10')), '7');
+  assert.equal(cellValue(c(doc, 'G11')), 'NA');
+});
+
+
 test('text date headers support explicitly selected day/month/year order', async () => {
   const files = fixtureFiles();
   files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']

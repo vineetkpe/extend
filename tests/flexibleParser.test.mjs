@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseInputRows } from '../utils/parser.js';
+import { parseInputRows, normalizePreviousPosition, calculateChange } from '../utils/parser.js';
 
 function simplified(text, options) {
   const parsed = parseInputRows(text, options);
@@ -89,4 +89,41 @@ test('one-column Keyword header is not treated as a search phrase', () => {
   });
   assert.equal(errors.length, 0);
   assert.deepEqual(data.map(r => r.keyword), ['solar installers', 'roof cleaning']);
+});
+
+
+test('previous positions only become exact ranks when the whole value is a safe positive integer', () => {
+  for (const [input, expected] of [
+    ['12.5', '12.5'],
+    ['12abc', '12abc'],
+    ['1e3', '1e3'],
+    ['1+', '1+'],
+    ['0', '0'],
+    ['-7', '-7'],
+    ['9007199254740993', '9007199254740993'],
+    ['7', 7],
+    ['0007', 7],
+    [15, 15],
+    ['100+', '>100'],
+    ['>100', '>100'],
+    ['n/a', '-'],
+    ['-', '-']
+  ]) {
+    assert.equal(normalizePreviousPosition(input), expected, String(input));
+  }
+});
+
+test('pasted ranking columns preserve malformed text instead of fabricating previous ranks', () => {
+  const input = [
+    'Keyword\tWebsite\tPrevious Rank',
+    'plumbing repairs\texample.com/plumbing\t12.5',
+    'roof services\texample.com/roof\t12abc',
+    'local plumber\texample.com/plumber\t1e3',
+    'drain cleaning\texample.com/drain\t7'
+  ].join('\n').replaceAll('\\t', '\t');
+  const parsed = parseInputRows(input);
+  assert.equal(parsed.errors.length, 0);
+  assert.deepEqual(parsed.valid.map(row => row.previousPosition), ['12.5', '12abc', '1e3', 7]);
+  assert.equal(calculateChange(parsed.valid[0].previousPosition, 6), '↑');
+  assert.equal(calculateChange(parsed.valid[3].previousPosition, 6), '↑ 1');
 });

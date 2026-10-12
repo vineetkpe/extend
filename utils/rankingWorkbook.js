@@ -174,8 +174,14 @@ function getClientLocation(clientDoc, strings) {
   };
 }
 function normalizePrevious(value) {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
-  return '-';
+  // Excel may store numeric ranks as shared/inline text, especially when a
+  // column was formatted as Text or imported from another worksheet.
+  // Only full positive integers are actual positions; never truncate 12.5
+  // or 12abc into a misleading baseline.
+  const raw = typeof value === 'string' ? value.trim() : value;
+  if (typeof raw === 'string' && !/^\d+$/.test(raw)) return '-';
+  const rank = Number(raw);
+  return Number.isSafeInteger(rank) && rank > 0 ? rank : '-';
 }
 
 /**
@@ -337,13 +343,27 @@ function createNewDateCell(doc, row, firstColumn) {
 }
 function rankingValue(result) {
   if (!result) return 'NOT CHECKED';
-  if (result.status === 'ERROR' || result.matchStatus === 'ERROR') return 'ERROR';
-  if (typeof result.currentPosition === 'number' &&
-      Number.isFinite(result.currentPosition) && result.currentPosition > 0) {
+  // Status must take precedence over stale positional data. Never write an
+  // unchecked or failed lookup as a measured ranking or confirmed absence.
+  if (result.status === 'ERROR' || result.matchStatus === 'ERROR' ||
+      result.currentPosition === 'Error') return 'ERROR';
+  if (result.status === 'NOT CHECKED' || result.status === 'NOT_CHECKED' ||
+      result.matchStatus === 'NOT_CHECKED' || result.matchStatus === 'NOT CHECKED' ||
+      result.currentPosition === 'NOT CHECKED') return 'NOT CHECKED';
+
+  const verifiedRank = result.status === 'EXACT PAGE' ||
+    result.matchStatus === 'EXACT PAGE';
+  const verifiedAbsence = result.status === 'TARGET PAGE NOT FOUND' ||
+    result.matchStatus === 'TARGET PAGE NOT FOUND' ||
+    result.matchStatus === 'OTHER DOMAIN PAGE FOUND';
+  // Contradictory check metadata must not turn into a claimed measurement.
+  if (verifiedRank && verifiedAbsence) return 'NOT CHECKED';
+  if (verifiedRank && typeof result.currentPosition === 'number' &&
+      Number.isSafeInteger(result.currentPosition) && result.currentPosition > 0) {
     return result.currentPosition;
   }
-  if (['TARGET PAGE NOT FOUND', 'Not Found'].includes(result.status) ||
-      result.currentPosition === 'Not Found') return 'NA';
+
+  if (verifiedAbsence && result.currentPosition === 'Not Found') return 'NA';
   return 'NOT CHECKED';
 }
 

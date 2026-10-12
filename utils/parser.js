@@ -105,9 +105,13 @@ export function normalizePreviousPosition(val) {
     return '>100';
   }
 
-  const num = parseInt(str, 10);
-  if (!isNaN(num) && num > 0) {
-    return num;
+  // parseInt('12.5'), parseInt('12abc'), and parseInt('1e3') all
+  // return misleading exact ranks. Accept only entire, safe, positive
+  // integers; preserve other values as non-numeric labels so they cannot
+  // produce fabricated ranking deltas.
+  if (/^\d+$/.test(str)) {
+    const num = Number(str);
+    if (Number.isSafeInteger(num) && num > 0) return num;
   }
 
   return str;
