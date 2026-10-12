@@ -52,6 +52,7 @@ let jobAdmissionBusy = false;
 // Debugger session management for Geolocation CDP Override
 let activeDebuggerTabId = null;
 let activeAppliedLocation = null; // { latitude, longitude, accuracy, tabId }
+let switchingLocationToTabId = null; // Ignore late detach events from prior client tabs.
 
 // The worker's module scope is recreated after Chrome suspends/terminates it.
 // Reconcile persisted RUNNING state before processing any incoming events.
@@ -246,6 +247,7 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
     chrome.declarativeNetRequest, tabId, googleDomain, validation
   );
 
+  switchingLocationToTabId = tabId;
   const target = { tabId };
 
   // If already attached to a different tab, detach first
@@ -317,6 +319,7 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
     }
   });
 
+  switchingLocationToTabId = null;
   return { success: true, coords: validation };
 }
 
@@ -354,6 +357,7 @@ async function clearGeolocationOverride(tabId = null) {
     status: LOCATION_STATES.NOT_CONFIGURED
   });
 
+  switchingLocationToTabId = null;
   await debugLog('[LRC Debugger] Geolocation override cleared and debugger detached.');
 }
 
@@ -368,6 +372,13 @@ async function clearGeolocationOverride(tabId = null) {
 chrome.debugger.onDetach.addListener(async (source, reason) => {
   const tabId = source && source.tabId;
   const isOurDebuggerTab = Boolean(activeDebuggerTabId && activeDebuggerTabId === tabId);
+
+  // Detaching the old client tab is expected while installing a new one.
+  // Its delayed onDetach event must not remove the NEW tab's X-Geo rule.
+  if ((switchingLocationToTabId && switchingLocationToTabId !== tabId) ||
+      (activeDebuggerTabId && activeDebuggerTabId !== tabId)) {
+    return;
+  }
 
   // Invalidate in-memory tracker if it was our tab
   if (isOurDebuggerTab) {
