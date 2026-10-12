@@ -53,6 +53,7 @@ let jobAdmissionBusy = false;
 let activeDebuggerTabId = null;
 let activeAppliedLocation = null; // { latitude, longitude, accuracy, tabId }
 let switchingLocationToTabId = null; // Ignore late detach events from prior client tabs.
+const intentionallyDetachedTabs = new Set(); // Reset/switch should not trigger a false failure.
 
 // The worker's module scope is recreated after Chrome suspends/terminates it.
 // Reconcile persisted RUNNING state before processing any incoming events.
@@ -116,10 +117,12 @@ function attachDebugger(target) {
  * @returns {Promise<void>}
  */
 function detachDebugger(target) {
+  intentionallyDetachedTabs.add(target.tabId);
   return new Promise((resolve) => {
     chrome.debugger.detach(target, () => {
       if (chrome.runtime.lastError) {
-        // Tab already closed or already detached
+        // A failed detach will not have generated an intentional onDetach.
+        intentionallyDetachedTabs.delete(target.tabId);
       }
       resolve();
     });
@@ -259,6 +262,7 @@ async function applyGeolocationOverride(tabId, coords, googleDomain = 'google.co
   // Attach to tab if not already attached
   if (activeDebuggerTabId !== tabId) {
     try {
+      intentionallyDetachedTabs.delete(tabId);
       await attachDebugger(target);
       activeDebuggerTabId = tabId;
       await debugLog(`[LRC Debugger] Attached to tab ${tabId}`);
@@ -372,6 +376,10 @@ async function clearGeolocationOverride(tabId = null) {
 chrome.debugger.onDetach.addListener(async (source, reason) => {
   const tabId = source && source.tabId;
   const isOurDebuggerTab = Boolean(activeDebuggerTabId && activeDebuggerTabId === tabId);
+
+  // Chrome fires onDetach even after an extension intentionally detaches.
+  // Never mark an intentional Reset Location or client switch as failure.
+  if (intentionallyDetachedTabs.delete(tabId)) return;
 
   // Detaching the old client tab is expected while installing a new one.
   // Its delayed onDetach event must not remove the NEW tab's X-Geo rule.
@@ -1067,6 +1075,7 @@ async function ensureLocationApplied(tabId, runId, settings) {
   } catch (err) {
     console.error('[LRC] ensureLocationApplied failed:', err);
     await clearScopedSearchLocation(chrome.declarativeNetRequest);
+    switchingLocationToTabId = null;
     activeAppliedLocation = null;
     await saveJobState({
       locationApplied: false,
