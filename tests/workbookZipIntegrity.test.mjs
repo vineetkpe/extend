@@ -75,11 +75,12 @@ test('corruption of a stored workbook part is rejected by its ZIP CRC', async ()
     /Workbook ZIP checksum\/length mismatch/);
 });
 
-test('stored workbook entries with inconsistent uncompressed size are rejected', async () => {
+test('stored workbook entries with conflicting sizes fail immediately at ZIP validation', () => {
   const { archive, centralOffset } = makeStoredArchive();
   const view = new DataView(archive.buffer);
   view.setUint32(centralOffset + 24, 999, true);
-  const zip = new WorkbookZip(archive);
-  await assert.rejects(() => zip.read('xl/worksheets/sheet1.xml'),
-    /Workbook ZIP checksum\/length mismatch/);
+  // Stronger ZIP header hardening rejects the mismatch before read(), rather
+  // than waiting for a subsequent checksum check.
+  assert.throws(() => new WorkbookZip(archive),
+    /Conflicting XLSX ZIP local and central headers/);
 });
