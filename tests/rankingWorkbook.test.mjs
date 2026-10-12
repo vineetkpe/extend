@@ -330,3 +330,38 @@ test('blank client latitude or longitude does not silently become 0,0', async ()
   assert.equal(inspected.location.latitude, '');
   assert.equal(inspected.location.longitude, '');
 });
+
+
+test('imports previous rankings stored as inline or shared numeric text', async () => {
+  const files = fixtureFiles();
+  files['xl/sharedStrings.xml'] = files['xl/sharedStrings.xml']
+    .replace('</sst>', '<si><t> 12 </t></si></sst>');
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace('<c r="G10" s="82"><v>4</v></c>',
+      '<c r="G10" s="82" t="inlineStr"><is><t>007</t></is></c>')
+    .replace('<c r="G11" s="82" t="s"><v>5</v></c>',
+      '<c r="G11" s="82" t="s"><v>11</v></c>');
+  const inspected = await inspectRankingWorkbook(zipStored(files));
+  assert.deepEqual(inspected.rows.map(row => row.previousPosition), [7, 12]);
+  assert.equal(inspected.latestDate, '2026-10-05');
+});
+
+test('malformed numeric text does not fabricate previous ranks in XLSX import', async () => {
+  for (const value of ['12.5', '12abc', '1e3', '0', '9007199254740993']) {
+    const files = fixtureFiles();
+    files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+      .replace('<c r="G10" s="82"><v>4</v></c>',
+        '<c r="G10" s="82" t="inlineStr"><is><t>' + value + '</t></is></c>');
+    const inspected = await inspectRankingWorkbook(zipStored(files));
+    assert.equal(inspected.rows[0].previousPosition, '-', value);
+  }
+});
+
+test('fractional numeric XLSX cells cannot be treated as exact previous positions', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace('<c r="G10" s="82"><v>4</v></c>',
+      '<c r="G10" s="82"><v>4.5</v></c>');
+  const inspected = await inspectRankingWorkbook(zipStored(files));
+  assert.equal(inspected.rows[0].previousPosition, '-');
+});

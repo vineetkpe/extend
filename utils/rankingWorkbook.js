@@ -162,8 +162,14 @@ function getClientLocation(clientDoc, strings) {
   };
 }
 function normalizePrevious(value) {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
-  return '-';
+  // Excel may store numeric ranks as shared/inline text, especially when a
+  // column was formatted as Text or imported from another worksheet.
+  // Only full positive integers are actual positions; never truncate 12.5
+  // or 12abc into a misleading baseline.
+  const raw = typeof value === 'string' ? value.trim() : value;
+  if (typeof raw === 'string' && !/^\d+$/.test(raw)) return '-';
+  const rank = Number(raw);
+  return Number.isSafeInteger(rank) && rank > 0 ? rank : '-';
 }
 
 /**
