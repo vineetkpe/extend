@@ -146,3 +146,28 @@ test('APPLY_LOCATION verifies in visible Google tab, rather than claiming pendin
   assert.equal(browser.tabsById.size, 1);
   assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationApplied, true);
 });
+
+
+test('TEST_LOCATION never reuses a former Search tab after navigation to Google Maps', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('location-nav-maps-isolation');
+  const request = {
+    action: 'TEST_LOCATION',
+    location: { latitude: 34.1478, longitude: -118.1445, accuracy: 20 }
+  };
+  const first = await browser.send(request);
+  assert.equal(first.success, true);
+  assert.equal(first.tabId, 50);
+  // The user switches the previously saved Search tab to Google Maps.
+  browser.tabsById.get(50).url = 'https://www.google.com/maps/place/Chicago';
+  const second = await browser.send(request);
+  assert.equal(second.success, true);
+  assert.equal(second.tabId, 51);
+  assert.equal(browser.tabsById.get(50).url,
+    'https://www.google.com/maps/place/Chicago');
+  assert.match(browser.tabsById.get(51).url, /^https:\/\/www\.google\.com\/search\?/);
+  assert.ok(browser.commands.some(command =>
+    command[0] === 'Emulation.setGeolocationOverride' && command[1] === 51));
+  assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].searchTabId, 51);
+  assert.equal(browser.tabsById.size, 2, 'The unrelated Google Maps tab stays untouched');
+});
