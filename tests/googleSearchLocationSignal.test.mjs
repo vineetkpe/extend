@@ -106,3 +106,17 @@ test('missing rule API and rule not retained by Chrome are explicit failures', a
     latitude: 1, longitude: 2
   }), /did not confirm/);
 });
+
+
+test('manifest grants only Google hosts and per-tab network-header capability', async () => {
+  const fs = await import('node:fs');
+  const manifest = JSON.parse(fs.readFileSync(
+    new URL('../manifest.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.manifest_version, 3);
+  assert.ok(manifest.permissions.includes('declarativeNetRequestWithHostAccess'));
+  assert.equal(manifest.host_permissions.every(host => host.startsWith('https://www.google.')), true);
+  assert.equal(manifest.permissions.includes('cookies'), false,
+    'Do not modify or read unrelated browser cookies');
+  assert.equal(manifest.permissions.includes('webRequestBlocking'), false,
+    'Do not use browser-wide request interception');
+});
