@@ -8,7 +8,9 @@ import { supportedGoogleDomain } from './locationPreview.js';
 
 export function isReusableRankSearchTab(tab, googleDomain) {
   if (!Number.isSafeInteger(tab?.id) || tab.id <= 0 ||
-      typeof tab.url !== 'string' || !supportedGoogleDomain(googleDomain)) {
+      typeof tab.url !== 'string' || !supportedGoogleDomain(googleDomain) ||
+      tab.discarded === true || tab.status === 'loading' ||
+      (tab.pendingUrl && tab.pendingUrl !== tab.url)) {
     return false;
   }
   try {
