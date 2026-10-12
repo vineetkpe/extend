@@ -106,3 +106,44 @@ test('different domains are not considered matches', () => {
     { match: false, isSameDomain: false, type: MATCH_TYPES.NOT_FOUND }
   );
 });
+
+
+test('Google redirect wrappers resolve across every supported country domain', () => {
+  const domains = [
+    'google.com', 'google.co.uk', 'google.ca', 'google.com.au',
+    'google.co.in', 'google.de', 'google.fr', 'google.es',
+    'google.it', 'google.co.nz', 'google.ie', 'google.com.sg',
+    'google.com.mx', 'google.com.br'
+  ];
+  const target = 'https://example.com/Landing?item=42';
+  for (const domain of domains) {
+    for (const parameter of ['q', 'url']) {
+      const redirect = 'https://www.' + domain + '/url?' +
+        parameter + '=' + encodeURIComponent(target);
+      assert.equal(cleanGoogleRedirect(redirect), target, domain + ' ' + parameter);
+      assert.equal(normalizeUrl(redirect), normalizeUrl(target), domain);
+      assert.equal(extractDomain(redirect), 'example.com', domain);
+      assert.equal(matchUrl(target, redirect).type, MATCH_TYPES.EXACT_PAGE, domain);
+    }
+  }
+});
+
+test('newly supported Google redirect domains still fail closed for unsafe destinations', () => {
+  for (const domain of ['google.es', 'google.it', 'google.com.sg', 'google.com.br']) {
+    const unsafe = 'https://www.' + domain + '/url?q=' +
+      encodeURIComponent('javascript:alert(1)');
+    assert.equal(cleanGoogleRedirect(unsafe), '', domain);
+    assert.equal(normalizeUrl(unsafe), '', domain);
+  }
+});
+
+test('Google-looking attacker hosts are not mistaken for trusted redirect origins', () => {
+  const target = 'https://example.com/Landing';
+  for (const host of ['www.google.es.attacker.example', 'attacker-google.es',
+                      'search.google.es', 'www.google.com.br.attacker.example']) {
+    const wrapper = 'https://' + host + '/url?q=' + encodeURIComponent(target);
+    assert.equal(cleanGoogleRedirect(wrapper), wrapper, host);
+    assert.notEqual(normalizeUrl(wrapper), normalizeUrl(target), host);
+    assert.equal(matchUrl(target, wrapper).match, false, host);
+  }
+});
