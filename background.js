@@ -1212,7 +1212,14 @@ function createKeywordErrorResult(item, message) {
 }
 
 async function checkKeywordRanks(item, tabId, settings, runId) {
-  const domain = settings.googleDomain || 'google.com';
+  // Restrict keyword requests to the exact allowlisted Google Search host.
+  const domain = supportedGoogleDomain(settings?.googleDomain || 'google.com');
+  if (!domain) {
+    return {
+      resultItem: createKeywordErrorResult(item, 'Unsupported Google Search country domain.'),
+      interrupted: false
+    };
+  }
   const maxDepth = Math.max(10, Math.min(100, Number(settings.maxPosition) || 50));
   const normTarget = normalizeUrl(item.targetUrl);
 
@@ -1876,6 +1883,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Merge project config with explicit job request settings
         const reqSettings = settings || {};
         const rawDomain = reqSettings.googleDomain || projectConfig?.googleDomain || 'google.com';
+        const validatedDomain = supportedGoogleDomain(rawDomain);
+        if (!validatedDomain) {
+          sendResponse({
+            success: false,
+            error: 'Unsupported Google Search country domain.',
+            message: 'Select a supported Google Search country domain before starting.'
+          });
+          return;
+        }
         const rawDelay = Math.max(5, parseInt(reqSettings.delaySeconds ?? projectConfig?.defaultDelaySeconds ?? 8, 10) || 8);
         const rawMaxDepth = Math.max(10, parseInt(reqSettings.maxPosition ?? projectConfig?.defaultMaxDepth ?? 50, 10) || 50);
         const useLocation = Boolean(reqSettings.useLocation !== undefined ? reqSettings.useLocation : projectConfig?.useLocation);
@@ -1923,7 +1939,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         // 3. Create complete immutable snapshot of active job settings
         const activeJobSettings = {
-          googleDomain: rawDomain,
+          googleDomain: validatedDomain,
           delaySeconds: rawDelay,
           maxPosition: rawMaxDepth,
           debugMode: Boolean(reqSettings.debugMode),
