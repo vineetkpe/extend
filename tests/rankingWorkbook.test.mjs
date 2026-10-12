@@ -330,3 +330,42 @@ test('blank client latitude or longitude does not silently become 0,0', async ()
   assert.equal(inspected.location.latitude, '');
   assert.equal(inspected.location.longitude, '');
 });
+
+
+test('rejects mismatched local ZIP filenames before parsing workbook content', async () => {
+  const bytes = zipStored(fixtureFiles());
+  // The first local file header begins at offset zero. Its name begins at 30.
+  bytes[30] ^= 1; // central directory still names [Content_Types].xml
+  assert.throws(() => new WorkbookZip(bytes),
+    /Conflicting XLSX ZIP local and central headers/);
+  await assert.rejects(() => inspectRankingWorkbook(bytes),
+    /Conflicting XLSX ZIP local and central headers/);
+});
+
+test('rejects conflicting ZIP compression methods, flags and sizes', () => {
+  const mutations = [
+    ['method', bytes => new DataView(bytes.buffer).setUint16(8, 8, true)],
+    ['flags', bytes => new DataView(bytes.buffer).setUint16(6, 0, true)],
+    ['CRC', bytes => new DataView(bytes.buffer).setUint32(14, 1, true)],
+    ['compressed size', bytes => new DataView(bytes.buffer).setUint32(18, 10, true)],
+    ['uncompressed size', bytes => new DataView(bytes.buffer).setUint32(22, 10, true)]
+  ];
+  for (const [name, mutate] of mutations) {
+    const bytes = zipStored(fixtureFiles());
+    mutate(bytes);
+    assert.throws(() => new WorkbookZip(bytes),
+      /Conflicting XLSX ZIP local and central headers/, name);
+  }
+});
+
+test('valid stored XLSX entries still import, export and re-import', async () => {
+  const original = zipStored(fixtureFiles());
+  const inspected = await inspectRankingWorkbook(original);
+  assert.equal(inspected.rows.length, 2);
+  const updated = await buildUpdatedRankingWorkbook(
+    original, inspected, [], '2026-10-08');
+  const bytes = new Uint8Array(await updated.arrayBuffer());
+  const reimported = await inspectRankingWorkbook(bytes);
+  assert.equal(reimported.latestDate, '2026-10-08');
+  assert.equal(reimported.rows.length, 2);
+});
