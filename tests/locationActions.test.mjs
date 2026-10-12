@@ -146,3 +146,21 @@ test('APPLY_LOCATION verifies in visible Google tab, rather than claiming pendin
   assert.equal(browser.tabsById.size, 1);
   assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationApplied, true);
 });
+
+
+test('APPLY_LOCATION stores correct tab and coordinates when accuracy exceeds 90 meters', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('location-high-accuracy-fingerprint');
+  const result = await browser.send({
+    action: 'APPLY_LOCATION',
+    location: { latitude: 34.1478, longitude: -118.1445, accuracy: 150 }
+  });
+  assert.equal(result.success, true);
+  const state = browser.stored[STORAGE_KEYS.JOB_STATE];
+  assert.deepEqual(state.appliedLocation, {
+    tabId: 50,
+    latitude: 34.1478,
+    longitude: -118.1445,
+    accuracy: 150
+  });
+});

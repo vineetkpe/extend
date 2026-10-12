@@ -59,65 +59,40 @@ export function validateCoordinates(lat, lon, accuracy = 20) {
 
 /**
  * Creates a comparable fingerprint for an applied location session.
- * Accepts (tabId, lat, lon, accuracy) or (lat, lon, accuracy, tabId).
- * @param {number|string} tabIdOrLat 
- * @param {number|string} latOrLon 
- * @param {number|string} lonOrAcc 
- * @param {number|string|null} accOrTabId 
+ * Always use (tabId, latitude, longitude, accuracy), matching background.js.
+ * Guessing argument order from a value greater than 90 is unsafe: accuracy
+ * may legitimately be 100+ meters and browser tab IDs have no fixed range.
+ * @param {number|string} tabId
+ * @param {number|string} latitude
+ * @param {number|string} longitude
+ * @param {number|string|null} accuracy
  * @returns {object}
  */
-export function createLocationFingerprint(tabIdOrLat, latOrLon, lonOrAcc, accOrTabId) {
-  let tabId, lat, lon, accuracy;
-  // If fourth param is tabId (large integer) and 1st param is coordinate
-  if (accOrTabId !== undefined && typeof accOrTabId === 'number' && accOrTabId > 90) {
-    lat = tabIdOrLat;
-    lon = latOrLon;
-    accuracy = lonOrAcc;
-    tabId = accOrTabId;
-  } else {
-    tabId = tabIdOrLat;
-    lat = latOrLon;
-    lon = lonOrAcc;
-    accuracy = accOrTabId;
-  }
-
+export function createLocationFingerprint(tabId, latitude, longitude, accuracy) {
   return {
     tabId: tabId ? Number(tabId) : null,
-    latitude: Number(lat),
-    longitude: Number(lon),
+    latitude: Number(latitude),
+    longitude: Number(longitude),
     accuracy: Number(accuracy) || 20
   };
 }
 
 /**
- * Checks whether the current configured coordinates match the applied location fingerprint.
- * Accepts (fingerprint, tabId, lat, lon, accuracy) or (fingerprint, lat, lon, accuracy, tabId).
- * @param {object|null} fingerprint 
- * @param {number|string} tabIdOrLat 
- * @param {number|string} latOrLon 
- * @param {number|string} lonOrAcc 
- * @param {number|string|null} accOrTabId 
+ * Checks the applied location fingerprint using the same explicit argument
+ * order: (fingerprint, tabId, latitude, longitude, accuracy).
+ * @param {object|null} fingerprint
+ * @param {number|string} tabId
+ * @param {number|string} latitude
+ * @param {number|string} longitude
+ * @param {number|string|null} accuracy
  * @returns {boolean}
  */
-export function isLocationFingerprintMatch(fingerprint, tabIdOrLat, latOrLon, lonOrAcc, accOrTabId) {
+export function isLocationFingerprintMatch(fingerprint, tabId, latitude, longitude, accuracy) {
   if (!fingerprint) return false;
-  let tabId, lat, lon, accuracy;
-  if (accOrTabId !== undefined && typeof accOrTabId === 'number' && accOrTabId > 90) {
-    lat = tabIdOrLat;
-    lon = latOrLon;
-    accuracy = lonOrAcc;
-    tabId = accOrTabId;
-  } else {
-    tabId = tabIdOrLat;
-    lat = latOrLon;
-    lon = lonOrAcc;
-    accuracy = accOrTabId;
-  }
-
   return (
     fingerprint.tabId === Number(tabId) &&
-    fingerprint.latitude === Number(lat) &&
-    fingerprint.longitude === Number(lon) &&
+    fingerprint.latitude === Number(latitude) &&
+    fingerprint.longitude === Number(longitude) &&
     fingerprint.accuracy === (Number(accuracy) || 20)
   );
 }
