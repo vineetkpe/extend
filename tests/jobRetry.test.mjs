@@ -88,3 +88,22 @@ test('multiple failed matches with same keyword but different URL keep original 
   assert.equal(retry.queue[1].id, 'd');
   assert.notEqual(retry.queue[0].targetUrl, retry.queue[1].targetUrl);
 });
+
+
+test('retry clears stale organic audit only for failed rows awaiting recheck', () => {
+  const state = completed();
+  const oldAudit = [{ position: 1, url: 'https://example.com/old', title: 'Old listing' }];
+  state.results[0].organicAudit = [{ position: 3, url: 'https://example.com/a', title: 'Verified listing' }];
+  state.results[1].organicAudit = oldAudit;
+  state.results[3].organicAudit = oldAudit;
+  const before = structuredClone(state);
+  const retry = makeFailedRetryPlan(state);
+  assert.equal(retry.allowed, true);
+  assert.deepEqual(retry.results[1].organicAudit, []);
+  assert.deepEqual(retry.results[3].organicAudit, []);
+  assert.deepEqual(retry.results[0].organicAudit, before.results[0].organicAudit);
+  assert.equal(retry.results[0], state.results[0], 'Untouched verified row retains its original object');
+  assert.equal(retry.results[1].checkedDepth, 0);
+  assert.equal(retry.results[1].checkedAt, null);
+  assert.deepEqual(state, before, 'Retry planning never mutates prior audit history');
+});
