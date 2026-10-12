@@ -54,3 +54,21 @@ test('organic rank definition is explicit and consistent across pages', () => {
     [1, 2, 3, 4]
   );
 });
+
+
+test('different source or ref query values do not collapse distinct organic listings', () => {
+  const output = prepareOrganicPage([
+    { url: 'https://example.com/product?ref=blue', title: 'Blue product' },
+    { url: 'https://example.com/product?ref=red', title: 'Red product' },
+    { url: 'https://example.com/catalog?source=web', title: 'Web catalog' },
+    { url: 'https://example.com/catalog?source=app', title: 'App catalog' }
+  ]);
+  assert.equal(output.ok, true);
+  assert.equal(output.skippedDuplicatesOnPage, 0);
+  assert.deepEqual(output.listings.map(item => item.normalizedUrl), [
+    'example.com/product?ref=blue',
+    'example.com/product?ref=red',
+    'example.com/catalog?source=web',
+    'example.com/catalog?source=app'
+  ]);
+});
