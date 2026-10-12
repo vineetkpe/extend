@@ -18,8 +18,12 @@ export function isGoogleLocationTab(tab, googleDomain) {
   if (!tab?.id || !tab?.url || !supportedGoogleDomain(googleDomain)) return false;
   try {
     const address = new URL(tab.url);
+    // Reuse only a Google Search results page. The user may have navigated
+    // the former search tab to Maps, Finance, account settings, or the homepage;
+    // none of those pages should receive SERPTrack's location debugger.
     return address.protocol === 'https:' &&
-      address.hostname.toLowerCase() === 'www.' + googleDomain;
+      address.hostname.toLowerCase() === 'www.' + googleDomain &&
+      address.pathname === '/search';
   } catch (_) {
     return false;
   }
