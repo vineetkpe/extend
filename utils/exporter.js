@@ -136,7 +136,8 @@ export function exportToCsv(results) {
       escapeCsvField(r.checkedDepth || 0),
       escapeCsvField(r.foundUrl || ''),
       escapeCsvField(otherDomainStr),
-      escapeCsvField(r.checkedAt || new Date().toISOString())
+      // A missing timestamp means no verified check time, not "checked now".
+      escapeCsvField(r.checkedAt ?? '')
     ].join(',');
   });
 
