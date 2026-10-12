@@ -6,7 +6,7 @@
  *
  * Pure UI presentation only: does not change matching or ranking evidence.
  */
-export function describePopupResult(row) {
+export function describePopupResult(row, jobStatus = '') {
   const depth = Number.isSafeInteger(row?.checkedDepth) && row.checkedDepth > 0
     ? row.checkedDepth : 0;
   const pending = !row ||
@@ -21,7 +21,13 @@ export function describePopupResult(row) {
       rankText: 'NOT CHECKED',
       matchText: 'NOT CHECKED',
       statusText: 'NOT CHECKED',
-      detail: 'Waiting for a verified Google result',
+      detail: jobStatus === 'PAUSED'
+        ? 'Check paused. Click RESUME to run this keyword.'
+        : jobStatus === 'BLOCKED'
+          ? 'Check blocked. Resolve the error and click RESUME.'
+          : jobStatus === 'STOPPED'
+            ? 'Check stopped before this keyword ran.'
+            : 'Waiting for a verified Google result',
       badgeClass: 'badge-not-checked'
     };
   }
