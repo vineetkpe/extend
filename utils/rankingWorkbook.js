@@ -315,13 +315,25 @@ function createNewDateCell(doc, row, firstColumn) {
 }
 function rankingValue(result) {
   if (!result) return 'NOT CHECKED';
-  if (result.status === 'ERROR' || result.matchStatus === 'ERROR') return 'ERROR';
-  if (typeof result.currentPosition === 'number' &&
-      Number.isFinite(result.currentPosition) && result.currentPosition > 0) {
+  // Status must take precedence over stale positional data. Never write an
+  // unchecked or failed lookup as a measured ranking or confirmed absence.
+  if (result.status === 'ERROR' || result.matchStatus === 'ERROR' ||
+      result.currentPosition === 'Error') return 'ERROR';
+  if (result.status === 'NOT CHECKED' || result.status === 'NOT_CHECKED' ||
+      result.matchStatus === 'NOT_CHECKED' || result.matchStatus === 'NOT CHECKED' ||
+      result.currentPosition === 'NOT CHECKED') return 'NOT CHECKED';
+
+  const verifiedRank = result.status === 'EXACT PAGE' ||
+    result.matchStatus === 'EXACT PAGE';
+  if (verifiedRank && typeof result.currentPosition === 'number' &&
+      Number.isSafeInteger(result.currentPosition) && result.currentPosition > 0) {
     return result.currentPosition;
   }
-  if (['TARGET PAGE NOT FOUND', 'Not Found'].includes(result.status) ||
-      result.currentPosition === 'Not Found') return 'NA';
+
+  const verifiedAbsence = result.status === 'TARGET PAGE NOT FOUND' ||
+    result.matchStatus === 'TARGET PAGE NOT FOUND' ||
+    result.matchStatus === 'OTHER DOMAIN PAGE FOUND';
+  if (verifiedAbsence && result.currentPosition === 'Not Found') return 'NA';
   return 'NOT CHECKED';
 }
 
