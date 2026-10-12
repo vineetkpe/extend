@@ -55,10 +55,17 @@
         <label for="defaultTargetSite">Default target website (optional, for keyword-only lists)</label>
         <input id="defaultTargetSite" type="text" placeholder="example.com" autocomplete="off">
       </div>
-      <p class="helper-text" style="margin-bottom:6px">Supports CSV, TSV, URL-first rows, headers in any order and extra spreadsheet columns.</p>
+      <p class="helper-text" style="margin-bottom:6px">Paste three Excel columns (tab-separated) in the order shown. CSV headers in any order also work.</p>
+      <div id="keywordColumnGuide" role="group" aria-label="Keyword input column order" style="display:grid;grid-template-columns: 1fr 1fr 1fr;gap:6px;margin:8px 0;font-size:11px;font-weight:600;text-align:left;">
+        <span>1. Keyword / search phrase</span>
+        <span>2. Target website URL</span>
+        <span>3. Previous organic rank (optional)</span>
+      </div>
+      <label for="keywordInput" class="helper-text">Enter or paste keyword rows below</label>
       <textarea
         id="keywordInput"
-        placeholder="Paste from Excel or enter:&#10;prompt optimizer   getpromptoptimizer.com   89&#10;best local seo   example.com/seo   12&#10;emergency dentist   example.com/urgent   -"
+        aria-describedby="keywordColumnGuide"
+        placeholder="Keyword&#9;Target Website URL&#9;Previous Rank&#10;best local seo&#9;https://example.com/seo&#9;12&#10;emergency dentist&#9;https://example.com/urgent&#9;-"
         rows="6"
         spellcheck="false"
       ></textarea>
