@@ -106,7 +106,11 @@ export function getLocationForProject(projectConfig, remembered, draft = null) {
   const project = validateCoordinates(latitude, longitude, projectConfig?.accuracy);
   if (project.valid) {
     return {
-      latitude, longitude, accuracy: project.accuracy, source: 'project'
+      // Retain exactly what was typed in an edited draft, but preserve the
+      // legacy normalized display for already-saved project coordinates.
+      latitude: projectConfig?.locationDraftEdited ? latitude : String(project.latitude),
+      longitude: projectConfig?.locationDraftEdited ? longitude : String(project.longitude),
+      accuracy: project.accuracy, source: 'project'
     };
   }
   // Never replace a partly typed project coordinate with another client's
