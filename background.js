@@ -36,6 +36,7 @@ import { getProjects, getActiveProject } from './utils/projectManager.js';
 import { mayStartNewJob, makeFailedRetryPlan } from './utils/jobRetry.js';
 import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/geolocationProof.js';
 import { getVisibleGoogleLocationTab } from './utils/locationPreview.js';
+import { getSafeRankSearchTab } from './utils/rankSearchTab.js';
 import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
@@ -1039,33 +1040,6 @@ async function ensureLocationApplied(tabId, runId, settings) {
 }
 
 /**
- * Ensures a visible search tab exists, either reusing an existing one or creating a new tab.
- * @param {number|null} existingTabId 
- * @param {object|null} settings
- * @returns {Promise<chrome.tabs.Tab>}
- */
-async function ensureSearchTab(existingTabId, settings = null) {
-  let tab = null;
-
-  if (existingTabId) {
-    try {
-      tab = await chrome.tabs.get(existingTabId);
-    } catch (_) {
-      // Tab was closed; create new one
-    }
-  }
-
-  if (!tab) {
-    tab = await chrome.tabs.create({
-      url: 'https://www.google.com',
-      active: true
-    });
-  }
-
-  return tab;
-}
-
-/**
  * Navigates the given tab to the search URL and waits for page load to complete.
  * @param {number} tabId 
  * @param {string} searchUrl 
@@ -1601,7 +1575,11 @@ async function runQueueLoop(runId) {
     // Ensure visible search tab exists using jobSettings
     let tab;
     try {
-      tab = await ensureSearchTab(state.searchTabId, jobSettings);
+      tab = await getSafeRankSearchTab({
+        existingTabId: state.searchTabId,
+        googleDomain: jobSettings.googleDomain || 'google.com',
+        tabs: chrome.tabs
+      });
       if (tab.id !== state.searchTabId) {
         await saveJobState({ searchTabId: tab.id });
       }
