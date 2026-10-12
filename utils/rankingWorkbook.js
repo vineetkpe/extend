@@ -218,7 +218,7 @@ export async function inspectRankingWorkbook(bytes, options = {}) {
       selectedSheet = name;
       break;
     } catch (error) {
-      if (desiredSheet) throw error;
+      if (desiredSheet || /^Invalid ranking date header:/.test(error.message)) throw error;
     }
   }
   if (!organic || !header) {
