@@ -38,6 +38,7 @@ import {
 } from '../utils/projectManager.js';
 
 import { validateCoordinates } from '../utils/locationValidator.js';
+import { canPromoteBaseline } from '../utils/baselinePromotion.js';
 import { getRememberedCoordinates, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
 import {
   LOCATION_STATES,
@@ -691,7 +692,7 @@ function renderJobState(state) {
   el.btnCopyPositions.disabled = !hasResultsForProject;
   el.btnCopyAll.disabled = !hasResultsForProject;
   el.btnDownloadCsv.disabled = !hasResultsForProject;
-  el.btnUseAsPrevious.disabled = !hasResultsForProject;
+  el.btnUseAsPrevious.disabled = !canPromoteBaseline(state, activeProject);
   el.btnRetryFailed.disabled = !hasResultsForProject || errors === 0;
 
   // Render results table with project ID isolation
@@ -1736,25 +1737,32 @@ function setupEventListeners() {
     }
   });
 
-  // Use Current as Previous (Baseline promotion) (Bug 4 Fix)
+  // Baselines only update from a completed job for the current client.
   el.btnUseAsPrevious.addEventListener('click', () => {
-    if (!activeProject) return;
-    if (!currentJobState || !currentJobState.results || currentJobState.results.length === 0) {
-      showToast('No current results available to set as previous.', 'error');
-      return;
-    }
-    if (currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
-      showToast('Action disabled: results belong to a different project.', 'error');
+    if (!canPromoteBaseline(currentJobState, activeProject)) {
+      showToast('Complete the current rank check before updating the baseline.', 'error');
       return;
     }
 
+    const selectedProjectId = activeProject.id;
+    const selectedRunId = currentJobState.runId;
     const projName = activeProject.config?.projectName || 'Current Project';
     openConfirmModal(
       'Use Current as Previous Baseline',
       `Promote current ranking results as the new baseline previous positions for "${projName}"? Future checks will compare against these positions.`,
       async () => {
         try {
-          const updated = await promoteCurrentToPrevious(activeProject.id, currentJobState.results);
+          // The user may have started another check while the dialog was open.
+          // Recheck the authoritative worker state before changing history.
+          const response = await chrome.runtime.sendMessage({ action: 'GET_STATE' });
+          const latestState = response?.state;
+          if (activeProject?.id !== selectedProjectId ||
+              !canPromoteBaseline(latestState, activeProject, selectedRunId)) {
+            showToast('The rank-check run has changed or is incomplete. Baseline not updated.', 'error');
+            await syncBackgroundState();
+            return;
+          }
+          const updated = await promoteCurrentToPrevious(selectedProjectId, latestState.results);
           activeProject.keywords = updated;
           renderKeywordsTextarea(updated);
           showToast(`Baseline updated for ${updated.length} keywords!`, 'success');
