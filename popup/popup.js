@@ -168,7 +168,7 @@ function renderLocationStatus(isApplied = false, details = null, needsReapply = 
     locationStatusIndicator.textContent = 'LOCATION NEEDS REAPPLY';
     locationStatusIndicator.className = 'location-status-badge status-warning';
   } else if (isApplied && details && details.latitude !== undefined && details.longitude !== undefined) {
-    locationStatusIndicator.textContent = `LOCATION: ACTIVE (${details.latitude}, ${details.longitude})`;
+    locationStatusIndicator.textContent = `DEVICE GEO VERIFIED (${details.latitude}, ${details.longitude})`;
     locationStatusIndicator.className = 'location-status-badge status-active';
   } else if (isConfigured || (details && details.latitude !== undefined)) {
     locationStatusIndicator.textContent = 'LOCATION: CONFIGURED — WILL APPLY WHEN RANK CHECK STARTS';
