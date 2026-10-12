@@ -26,7 +26,7 @@ import {
   SESSION_STORAGE_UNAVAILABLE_ERROR
 } from '../utils/storage.js';
 import { validateCoordinates } from '../utils/locationValidator.js';
-import { getRememberedCoordinates, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
+import { getRememberedCoordinates, getRememberedCoordinateDraft, rememberCoordinateDraft, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
 import {
   getProjects,
   getActiveProject,
@@ -701,8 +701,10 @@ function saveCurrentSettings() {
 async function restoreLocationFields(project) {
   if (!project) return;
   const cfg = project.config || project;
-  const remembered = await getRememberedCoordinates();
-  const location = getLocationForProject(cfg, remembered);
+  const [remembered, draft] = await Promise.all([
+    getRememberedCoordinates(), getRememberedCoordinateDraft()
+  ]);
+  const location = getLocationForProject(cfg, remembered, draft);
   if (useLocationCheckbox) useLocationCheckbox.checked =
     Boolean(cfg.useLocation && location.source === 'project');
   if (locationNameInput) locationNameInput.value = cfg.locationName || '';
@@ -711,24 +713,28 @@ async function restoreLocationFields(project) {
   if (accuracyInput) accuracyInput.value = location.accuracy;
 }
 
-/** Save a complete, valid coordinate pair without requiring Apply Location. */
+/** Save even a single coordinate as soon as the user types it.
+ * Chrome closes its popup when users switch away to copy the other coordinate.
+ * A complete valid pair is separately remembered for safe Apply/Test.
+ */
 async function persistEditedLocation() {
-  if (!activeProject) return;
-  const validation = validateCoordinates(
-    latitudeInput?.value, longitudeInput?.value, accuracyInput?.value
-  );
-  if (!validation.valid) return;
+  const project = activeProject;
+  const latitude = latitudeInput?.value.trim() ?? '';
+  const longitude = longitudeInput?.value.trim() ?? '';
+  const accuracy = accuracyInput?.value.trim() || '20';
+  const config = {
+    latitude, longitude, accuracy,
+    locationName: locationNameInput?.value.trim() || '',
+    locationDraftEdited: true
+  };
+  // Update the UI's project snapshot immediately before any async storage.
+  if (project) Object.assign(project.config || project, config);
   try {
-    const result = await rememberCoordinates(validation);
-    if (!result.saved) throw new Error(result.error);
-    const config = {
-      latitude: String(validation.latitude),
-      longitude: String(validation.longitude),
-      accuracy: validation.accuracy,
-      locationName: locationNameInput?.value.trim() || ''
-    };
-    await updateProject(activeProject.id, config);
-    Object.assign(activeProject.config || activeProject, config);
+    const draftSaved = await rememberCoordinateDraft({ latitude, longitude, accuracy });
+    if (!draftSaved.saved) return; // Invalid text remains visible for correction.
+    if (project) await updateProject(project.id, config);
+    const validation = validateCoordinates(latitude, longitude, accuracy);
+    if (validation.valid) await rememberCoordinates(validation);
   } catch (error) {
     showLocationMessage('Could not remember coordinates: ' + error.message, false);
   }
@@ -1058,10 +1064,13 @@ function attachEventListeners() {
     });
   }
 
-  // Persist valid coordinates when a field loses focus, so switching views
-  // does not erase a pair that has not yet been applied through CDP.
+  // Input, not blur/change: a Chrome popup may close before focus changes
+  // while the user copies longitude from another app or tab.
   for (const element of [latitudeInput, longitudeInput, accuracyInput, locationNameInput]) {
-    if (element) element.addEventListener('change', persistEditedLocation);
+    if (element) {
+      element.addEventListener('input', persistEditedLocation);
+      element.addEventListener('change', persistEditedLocation);
+    }
   }
 
   // 8. Location configuration toggles
