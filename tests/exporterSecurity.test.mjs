@@ -53,3 +53,30 @@ test('CSV quoting still handles embedded quotes and newlines after sanitization'
   assert.ok(csv.includes(`"'=IF(TRUE,""hi"",""bye"")`));
   assert.equal(csv.split('\r\n').length, 2);
 });
+
+
+test('CSV leaves missing or null check timestamps blank instead of inventing the export time', () => {
+  const csv = exportToCsv([
+    makeResult('not checked', {
+      status: 'NOT CHECKED',
+      matchStatus: 'NOT_CHECKED',
+      currentPosition: 'NOT CHECKED',
+      displayPosition: 'NOT CHECKED',
+      checkedAt: null
+    }),
+    makeResult('missing timestamp', { checkedAt: undefined }),
+    makeResult('empty timestamp', { checkedAt: '' })
+  ]);
+  const [header, ...rows] = csv.split('\r\n');
+  assert.ok(header.endsWith('checked_at'));
+  assert.equal(rows.length, 3);
+  for (const row of rows) {
+    assert.ok(row.endsWith(',""'), 'Unknown check time must remain blank: ' + row);
+  }
+});
+
+test('CSV preserves the actual check time for checked keywords', () => {
+  const timestamp = '2026-10-08T09:30:00Z';
+  const csv = exportToCsv([makeResult('verified rank', { checkedAt: timestamp })]);
+  assert.ok(csv.split('\r\n')[1].endsWith(',"' + timestamp + '"'));
+});
