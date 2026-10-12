@@ -91,7 +91,15 @@ export class WorkbookZip {
   async read(path) {
     const entry = this.entries.get(path);
     if (!entry) throw new Error('Workbook XML part missing: ' + path);
-    if (entry.method === 0) return entry.compressed.slice();
+    if (entry.method === 0) {
+      // Stored ZIP entries have no decompression step, but their central
+      // directory length and CRC must still match the actual payload.
+      if (entry.compressed.length !== entry.uncompressedSize ||
+          crc32(entry.compressed) !== entry.crc) {
+        throw new Error('Workbook ZIP checksum/length mismatch.');
+      }
+      return entry.compressed.slice();
+    }
     const stream = new Blob([entry.compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
     const result = new Uint8Array(await new Response(stream).arrayBuffer());
     if (result.length !== entry.uncompressedSize || result.length > MAX_ENTRY_BYTES ||
