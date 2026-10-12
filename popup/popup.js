@@ -12,6 +12,7 @@
  */
 
 import { parseInputRows } from '../utils/parser.js';
+import { describePopupResult, countVerifiedPopupResults } from '../utils/popupResultPresentation.js';
 import { getProjectInputDraft, saveProjectInputDraft, formatSavedKeywordRows } from '../utils/projectInputDraft.js';
 import {
   exportToTsv,
@@ -324,8 +325,18 @@ function renderResultsTable(results) {
     return;
   }
 
-  currentResults = results || [];
-  if (resultsCount) resultsCount.textContent = `${currentResults.length} checked`;
+  currentResults = Array.isArray(results) ? results : [];
+  if (resultsCount) {
+    const validRows = currentResults.filter(Boolean);
+    const verified = countVerifiedPopupResults(validRows);
+    const pending = validRows.filter(row => describePopupResult(row).kind === 'pending').length;
+    const errors = validRows.filter(row => describePopupResult(row).kind === 'error').length;
+    resultsCount.textContent = [
+      `${verified} checked`,
+      ...(pending ? [`${pending} pending`] : []),
+      ...(errors ? [`${errors} errors`] : [])
+    ].join(' · ');
+  }
 
   if (currentResults.length === 0) {
     resultsTableBody.replaceChildren();
@@ -366,88 +377,48 @@ function renderResultsTable(results) {
     tdPrev.textContent = String(r.previousPosition || '-');
     tr.appendChild(tdPrev);
 
-    // 4. Current
+    const display = describePopupResult(r);
+
+    // 4. Current organic rank: never label an unverified row Not Found.
     const tdCur = document.createElement('td');
     tdCur.className = 'text-center';
-    if (r.matchStatus === 'EXACT PAGE') {
-      const strong = document.createElement('strong');
-      strong.textContent = String(r.currentPosition || '');
-      tdCur.appendChild(strong);
-    } else {
-      const span = document.createElement('span');
-      span.className = 'not-found-text';
-      if (r.status === 'ERROR') {
-        span.textContent = 'Error';
-      } else {
-        const depthText = r.checkedDepth ? `Not Found (Top ${r.checkedDepth})` : 'Not Found';
-        span.textContent = depthText;
-      }
-      tdCur.appendChild(span);
+    const current = document.createElement(display.kind === 'exact' ? 'strong' : 'span');
+    if (display.kind !== 'exact') {
+      current.className = display.kind === 'not-found' ? 'not-found-text' : 'not-checked-text';
     }
+    current.textContent = display.rankText;
+    tdCur.appendChild(current);
     tr.appendChild(tdCur);
 
-    // 5. Change
+    // 5. Change is meaningful only for verified organic results.
     const tdChange = document.createElement('td');
+    const change = display.kind === 'exact' || display.kind === 'not-found'
+      ? (r.change || '—') : '—';
     let changeClass = 'change-same';
-    if (r.change && r.change.includes('↑')) changeClass = 'change-up';
-    else if (r.change && r.change.includes('↓')) changeClass = 'change-down';
+    if (change.includes('↑')) changeClass = 'change-up';
+    else if (change.includes('↓')) changeClass = 'change-down';
     tdChange.className = `text-center ${changeClass}`;
-    tdChange.textContent = r.change || '—';
+    tdChange.textContent = change;
     tr.appendChild(tdChange);
 
-    // 6. Match
+    // 6. Match and its evidence, including explicit pending or error states.
     const tdMatch = document.createElement('td');
     const matchBadge = document.createElement('span');
-    let matchBadgeClass = 'badge-not-found';
-    let matchLabel = 'NOT FOUND';
-
-    if (r.matchStatus === 'EXACT PAGE') {
-      matchBadgeClass = 'badge-exact';
-      matchLabel = 'EXACT PAGE';
-    } else if (r.matchStatus === 'OTHER DOMAIN PAGE FOUND') {
-      matchBadgeClass = 'badge-other-domain';
-      matchLabel = 'OTHER DOMAIN FOUND';
-    } else if (r.status === 'ERROR') {
-      matchBadgeClass = 'badge-error';
-      matchLabel = 'ERROR';
-    }
-    matchBadge.className = `rank-badge ${matchBadgeClass}`;
-    matchBadge.textContent = matchLabel;
+    matchBadge.className = `rank-badge ${display.badgeClass}`;
+    matchBadge.textContent = display.matchText;
     tdMatch.appendChild(matchBadge);
-
-    if (r.matchStatus === 'EXACT PAGE') {
-      const sub = document.createElement('span');
-      sub.className = 'sub-info';
-      sub.textContent = `Checked depth: ${r.checkedDepth || 0}`;
-      tdMatch.appendChild(sub);
-    } else if (r.matchStatus === 'OTHER DOMAIN PAGE FOUND') {
-      const sub = document.createElement('span');
-      sub.className = 'sub-info';
-      sub.title = r.otherPageFound || '';
-      sub.textContent = `Other page ranks at pos ${r.otherPagePosition || '?'}`;
-      tdMatch.appendChild(sub);
-    } else if (r.status === 'ERROR') {
-      const sub = document.createElement('span');
-      sub.className = 'sub-info';
-      sub.title = r.error || '';
-      sub.textContent = r.error || 'Error';
-      tdMatch.appendChild(sub);
-    } else {
-      const sub = document.createElement('span');
-      sub.className = 'sub-info';
-      sub.textContent = `Checked ${r.checkedDepth || 0} results`;
-      tdMatch.appendChild(sub);
-    }
+    const detail = document.createElement('span');
+    detail.className = 'sub-info';
+    detail.textContent = display.detail;
+    if (display.detailTitle) detail.title = display.detailTitle;
+    tdMatch.appendChild(detail);
     tr.appendChild(tdMatch);
 
-    // 7. Status
+    // 7. Status always agrees with the verified state of the result.
     const tdStatus = document.createElement('td');
     const statusBadgeElem = document.createElement('span');
-    statusBadgeElem.className = `rank-badge ${matchBadgeClass}`;
-    let statusLabel = 'TARGET NOT FOUND';
-    if (r.matchStatus === 'EXACT PAGE') statusLabel = 'EXACT PAGE';
-    else if (r.status === 'ERROR') statusLabel = 'ERROR';
-    statusBadgeElem.textContent = statusLabel;
+    statusBadgeElem.className = `rank-badge ${display.badgeClass}`;
+    statusBadgeElem.textContent = display.statusText;
     tdStatus.appendChild(statusBadgeElem);
     tr.appendChild(tdStatus);
 
