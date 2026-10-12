@@ -29,6 +29,13 @@ test('START_JOB placeholder in screenshot shows NOT CHECKED, never Not Found', (
   assert.equal(countVerifiedPopupResults([pending]), 0);
 });
 
+test('paused, blocked or stopped queues explain why 0-of-1 ranks have not updated', () => {
+  assert.match(describePopupResult(pending, 'PAUSED').detail, /RESUME/);
+  assert.match(describePopupResult(pending, 'BLOCKED').detail, /blocked.*RESUME/);
+  assert.match(describePopupResult(pending, 'STOPPED').detail, /stopped/);
+  assert.equal(describePopupResult(pending, 'PAUSED').statusText, 'NOT CHECKED');
+});
+
 test('rank detected after background update replaces pending display with exact rank', () => {
   const initial = [pending];
   const updated = [{
@@ -143,7 +150,7 @@ test('invalid numeric ranks are not presented as verified exact positions', () =
 
 test('popup renders all row states through central presenter, not stale fallback', () => {
   const source = fs.readFileSync(new URL('../popup/popup.js', import.meta.url), 'utf8');
-  assert.match(source, /const display = describePopupResult\(r\)/);
+  assert.match(source, /const display = describePopupResult\(r, currentJobState\?\.status\)/);
   assert.match(source, /countVerifiedPopupResults\(validRows\)/);
   assert.match(source, /renderResultsTable\(res\.state\.results\)/);
   assert.match(source, /renderResultsTable\(msg\.state\.results\)/);
