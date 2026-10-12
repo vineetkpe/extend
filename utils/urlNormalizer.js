@@ -5,7 +5,9 @@
  * and Google redirect wrappers.
  */
 
-// Tracking parameters to strip out
+// Strip known tracking-only parameters. Do not strip ambiguous keys like
+// "ref" or "source": on some sites these distinguish different content, and
+// removing them could report a different landing page as an exact match.
 const TRACKING_PARAMS = new Set([
   'utm_source',
   'utm_medium',
@@ -15,8 +17,6 @@ const TRACKING_PARAMS = new Set([
   'gclid',
   'fbclid',
   'msclkid',
-  'ref',
-  'source',
   'ved',
   'usg',
   'ei',
