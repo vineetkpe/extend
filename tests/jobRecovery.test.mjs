@@ -121,3 +121,28 @@ test('reconcile saves exactly one patch, then does nothing on later restart', as
   assert.equal(await reconcileWorkerRestart(async () => state, async () => { writes++; }), null);
   assert.equal(writes, 1);
 });
+
+
+test('worker restart clears provisional organic audit without erasing verified audits', () => {
+  const verified = {
+    id: 'first', status: 'EXACT PAGE', currentPosition: 5,
+    organicAudit: [{ position: 5, url: 'https://example.com/verified' }]
+  };
+  const unverified = {
+    id: 'second', status: 'EXACT PAGE', matchStatus: 'EXACT PAGE',
+    currentPosition: 2, checkedDepth: 10, checkedAt: '2026-10-08T00:00:00Z',
+    organicAudit: [{ position: 2, url: 'https://example.com/unverified' }],
+    __commitToken: 'pending'
+  };
+  const state = running({ results: [verified, unverified] });
+  const before = structuredClone(state);
+  const patch = getWorkerRestartPatch(state);
+  assert.equal(patch.status, 'PAUSED');
+  assert.equal(patch.results[0], verified);
+  assert.deepEqual(patch.results[0].organicAudit, verified.organicAudit);
+  assert.equal(patch.results[1].status, 'NOT CHECKED');
+  assert.equal(patch.results[1].checkedDepth, 0);
+  assert.equal(patch.results[1].checkedAt, null);
+  assert.deepEqual(patch.results[1].organicAudit, []);
+  assert.deepEqual(state, before, 'Restart recovery must not mutate saved source results');
+});

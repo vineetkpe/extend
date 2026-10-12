@@ -615,10 +615,20 @@ export async function importProjectJson(jsonString, customName = '') {
       continue; // Skip dangerous or invalid URLs
     }
 
+    // Import only real rank integers, not values coerced by Number() such as
+    // true, [7], "3.5", "1e3", or "Infinity". Keep the ">100" unranked
+    // marker so exporting and restoring a project does not lose its baseline.
     let prevPos = null;
-    if (k.previousPosition !== undefined && k.previousPosition !== null && k.previousPosition !== '—' && k.previousPosition !== '-') {
-      const num = Number(k.previousPosition);
-      if (!isNaN(num) && num > 0) prevPos = num;
+    if (k.previousPosition === '>100' || k.previousPosition === '100+') {
+      prevPos = '>100';
+    } else if (typeof k.previousPosition === 'number') {
+      if (Number.isSafeInteger(k.previousPosition) && k.previousPosition > 0) {
+        prevPos = k.previousPosition;
+      }
+    } else if (typeof k.previousPosition === 'string' &&
+               /^\d+$/.test(k.previousPosition.trim())) {
+      const parsedRank = Number(k.previousPosition.trim());
+      if (Number.isSafeInteger(parsedRank) && parsedRank > 0) prevPos = parsedRank;
     }
 
     sanitizedKeywords.push({
