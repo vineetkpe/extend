@@ -14,7 +14,7 @@ function fakeChrome() {
       local: {
         async get(key) { return { [key]: structuredClone(data[key]) }; },
         async set(record) { writes++; Object.assign(data, structuredClone(record)); },
-        async remove(key) { delete data[key]; }
+        async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete data[key]; }
       }
     }
   };
