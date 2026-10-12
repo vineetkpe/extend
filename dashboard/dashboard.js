@@ -528,7 +528,7 @@ function updateLocationStatusBadge(state, details = null, tabId = null) {
 
   if (state === LOCATION_STATES.ACTIVE || state === 'ACTIVE') {
     el.locationStatusBadge.classList.add('badge-active');
-    el.locationStatusBadge.textContent = tabId ? `LOCATION: ACTIVE (Tab ${tabId})` : 'LOCATION: ACTIVE';
+    el.locationStatusBadge.textContent = tabId ? `DEVICE GEO VERIFIED (Tab ${tabId})` : 'DEVICE GEO VERIFIED';
     el.locationMsg.textContent = details
       ? `Browser device coordinates: ${details.latitude}, ${details.longitude} (±${details.accuracy || 20}m). Google may still show an IP-based location.`
       : 'Browser location override is active only in the Google search tab.';
