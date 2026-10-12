@@ -84,3 +84,57 @@ test('failed navigation closes only the newly-created blank tab', async () => {
   );
   assert.deepEqual(closed, [99]);
 });
+
+
+test('only Google Search paths qualify for a reusable location-preview tab', () => {
+  for (const domain of ['google.com', 'google.co.in', 'google.com.br']) {
+    const origin = 'https://www.' + domain;
+    for (const suffix of [
+      '/', '/maps', '/maps/place/Delhi', '/finance', '/preferences',
+      '/account', '/url?q=https%3A%2F%2Fexample.com',
+      '/searching?q=dentist', '/search/other', '/SEARCH?q=dentist'
+    ]) {
+      assert.equal(
+        isGoogleLocationTab({ id: 4, url: origin + suffix }, domain),
+        false, domain + suffix
+      );
+    }
+    assert.equal(isGoogleLocationTab({ id: 4, url: origin + '/search?q=dentist' }, domain), true);
+    assert.equal(isGoogleLocationTab({ id: 4, url: origin + '/search?start=10&q=dentist' }, domain), true);
+  }
+});
+
+test('navigated Google Maps tab is retained but not reused for location debugging', async () => {
+  const operations = [];
+  const originalTab = { id: 21, url: 'https://www.google.com/maps/place/Chicago', active: true };
+  const nextTab = { id: 22, url: 'about:blank', active: true };
+  const tabs = {
+    async get(id) {
+      return id === 21 ? { ...originalTab } : { ...nextTab };
+    },
+    async create(options) {
+      operations.push(['create', options]);
+      return { ...nextTab };
+    },
+    async update(id, args) {
+      operations.push(['update', id, args]);
+      if (id === 22) Object.assign(nextTab, args);
+    },
+    async remove(id) { operations.push(['remove', id]); }
+  };
+  const output = await getVisibleGoogleLocationTab({
+    searchTabId: 21,
+    googleDomain: 'google.com',
+    tabs,
+    async navigate(id, url) {
+      operations.push(['navigate', id, url]);
+      nextTab.url = url;
+    }
+  });
+  assert.equal(output.created, true);
+  assert.equal(output.tab.id, 22);
+  assert.match(output.tab.url, /^https:\/\/www\.google\.com\/search\?/);
+  assert.equal(originalTab.url, 'https://www.google.com/maps/place/Chicago');
+  assert.equal(operations.some(operation => operation[0] === 'update' && operation[1] === 21), false);
+  assert.equal(operations.some(operation => operation[0] === 'remove' && operation[1] === 21), false);
+});
