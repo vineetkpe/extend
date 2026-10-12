@@ -64,17 +64,41 @@ export class WorkbookZip {
           uncompressedSize === 0xffffffff || uncompressedSize > MAX_ENTRY_BYTES) {
         throw new Error('Unsupported encrypted/compressed XLSX entry.');
       }
+      const centralEnd = position + 46 + nameLength + extraLength + commentLength;
+      if (centralEnd > end) throw new Error('Corrupted XLSX ZIP central directory.');
       const nameBytes = bytes.slice(position + 46, position + 46 + nameLength);
       const name = decoder.decode(nameBytes);
       if (this.entries.has(name) || name.startsWith('/') || name.includes('..')) {
         throw new Error('Duplicate or unsafe XLSX package entry.');
       }
-      if (offset + 30 > bytes.length || view.getUint32(offset, true) !== 0x04034b50) {
+      if (offset + 30 > centralOffset || view.getUint32(offset, true) !== 0x04034b50) {
         throw new Error('Invalid XLSX ZIP local header.');
       }
-      const localDataStart = offset + 30 + view.getUint16(offset + 26, true) +
-        view.getUint16(offset + 28, true);
-      if (localDataStart + compressedSize > bytes.length) {
+      const localFlags = view.getUint16(offset + 6, true);
+      const localMethod = view.getUint16(offset + 8, true);
+      const localNameLength = view.getUint16(offset + 26, true);
+      const localExtraLength = view.getUint16(offset + 28, true);
+      const localNameStart = offset + 30;
+      const localDataStart = localNameStart + localNameLength + localExtraLength;
+      // A ZIP part must have the same identity in its local header and central
+      // directory. Otherwise different tools may read different workbook parts.
+      if (localFlags !== flags || localMethod !== method ||
+          localNameLength !== nameLength || localDataStart > centralOffset) {
+        throw new Error('Conflicting XLSX ZIP local and central headers.');
+      }
+      for (let j = 0; j < nameLength; j++) {
+        if (bytes[localNameStart + j] !== nameBytes[j]) {
+          throw new Error('Conflicting XLSX ZIP local and central headers.');
+        }
+      }
+      // Without a data descriptor, size/checksum fields must also agree.
+      if (!(flags & 0x8) &&
+          (view.getUint32(offset + 14, true) !== crc ||
+           view.getUint32(offset + 18, true) !== compressedSize ||
+           view.getUint32(offset + 22, true) !== uncompressedSize)) {
+        throw new Error('Conflicting XLSX ZIP local and central headers.');
+      }
+      if (localDataStart + compressedSize > centralOffset) {
         throw new Error('Truncated XLSX ZIP entry.');
       }
       this.entries.set(name, {
@@ -100,10 +124,34 @@ export class WorkbookZip {
       }
       return entry.compressed.slice();
     }
-    const stream = new Blob([entry.compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-    const result = new Uint8Array(await new Response(stream).arrayBuffer());
-    if (result.length !== entry.uncompressedSize || result.length > MAX_ENTRY_BYTES ||
-        crc32(result) !== entry.crc) throw new Error('Workbook ZIP checksum/length mismatch.');
+    const stream = new Blob([entry.compressed]).stream()
+      .pipeThrough(new DecompressionStream('deflate-raw'));
+    const reader = stream.getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // Do not inflate the entire ZIP part before checking its size.
+        // Malicious archives can claim a tiny uncompressed size while
+        // expanding far beyond the 30 MB per-entry limit.
+        size += value.byteLength;
+        if (size > MAX_ENTRY_BYTES || size > entry.uncompressedSize) {
+          throw new Error('Workbook ZIP checksum/length mismatch.');
+        }
+        chunks.push(value);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+    const result = chunksToBytes(chunks);
+    if (result.length !== entry.uncompressedSize || crc32(result) !== entry.crc) {
+      throw new Error('Workbook ZIP checksum/length mismatch.');
+    }
     return result;
   }
 

@@ -332,6 +332,93 @@ test('blank client latitude or longitude does not silently become 0,0', async ()
 });
 
 
+test('over-expanding XLSX deflate entries are rejected without unbounded response buffering', async () => {
+  const zip = new WorkbookZip(zipStored(fixtureFiles()));
+  const part = 'xl/worksheets/sheet2.xml';
+  const expanded = new Uint8Array(2 * 1024 * 1024).fill(65);
+  const compressed = new Uint8Array(await new Response(
+    new Blob([expanded]).stream().pipeThrough(new CompressionStream('deflate-raw'))
+  ).arrayBuffer());
+  // Forge the ZIP metadata to claim a tiny file while the deflate payload
+  // expands to megabytes. The reader must stop as soon as the size is exceeded.
+  zip.entries.set(part, {
+    ...zip.entries.get(part), method: 8, compressed,
+    uncompressedSize: 32, crc: crc32(expanded)
+  });
+  const archive = new WorkbookZip(new Uint8Array(await zip.toBlob().arrayBuffer()));
+
+  // Regression guard: collecting an entire decompressed stream through
+  // Response.arrayBuffer() would reintroduce unbounded memory allocation.
+  const originalResponse = globalThis.Response;
+  globalThis.Response = class {
+    constructor() { throw new Error('Unbounded Response stream buffering'); }
+  };
+  try {
+    await assert.rejects(() => archive.read(part), /Workbook ZIP checksum\/length mismatch/);
+  } finally {
+    globalThis.Response = originalResponse;
+  }
+});
+
+test('bounded XLSX deflate reader still accepts valid and rejects corrupt data', async () => {
+  const zip = new WorkbookZip(zipStored(fixtureFiles()));
+  const part = 'xl/worksheets/sheet2.xml';
+  const plain = te.encode(fixtureFiles()[part]);
+  const compressed = new Uint8Array(await new Response(
+    new Blob([plain]).stream().pipeThrough(new CompressionStream('deflate-raw'))
+  ).arrayBuffer());
+  zip.entries.set(part, {
+    ...zip.entries.get(part), method: 8, compressed,
+    uncompressedSize: plain.length, crc: crc32(plain)
+  });
+  const archive = new WorkbookZip(new Uint8Array(await zip.toBlob().arrayBuffer()));
+  assert.deepEqual(await archive.read(part), plain);
+
+  // Invalid checksum must fail even when the decompressed size is within limit.
+  archive.entries.get(part).crc ^= 1;
+  await assert.rejects(() => archive.read(part), /Workbook ZIP checksum\/length mismatch/);
+});
+
+
+test('rejects mismatched local ZIP filenames before parsing workbook content', async () => {
+  const bytes = zipStored(fixtureFiles());
+  // The first local file header begins at offset zero. Its name begins at 30.
+  bytes[30] ^= 1; // central directory still names [Content_Types].xml
+  assert.throws(() => new WorkbookZip(bytes),
+    /Conflicting XLSX ZIP local and central headers/);
+  await assert.rejects(() => inspectRankingWorkbook(bytes),
+    /Conflicting XLSX ZIP local and central headers/);
+});
+
+test('rejects conflicting ZIP compression methods, flags and sizes', () => {
+  const mutations = [
+    ['method', bytes => new DataView(bytes.buffer).setUint16(8, 8, true)],
+    ['flags', bytes => new DataView(bytes.buffer).setUint16(6, 0, true)],
+    ['CRC', bytes => new DataView(bytes.buffer).setUint32(14, 1, true)],
+    ['compressed size', bytes => new DataView(bytes.buffer).setUint32(18, 10, true)],
+    ['uncompressed size', bytes => new DataView(bytes.buffer).setUint32(22, 10, true)]
+  ];
+  for (const [name, mutate] of mutations) {
+    const bytes = zipStored(fixtureFiles());
+    mutate(bytes);
+    assert.throws(() => new WorkbookZip(bytes),
+      /Conflicting XLSX ZIP local and central headers/, name);
+  }
+});
+
+test('valid stored XLSX entries still import, export and re-import', async () => {
+  const original = zipStored(fixtureFiles());
+  const inspected = await inspectRankingWorkbook(original);
+  assert.equal(inspected.rows.length, 2);
+  const updated = await buildUpdatedRankingWorkbook(
+    original, inspected, [], '2026-10-08');
+  const bytes = new Uint8Array(await updated.arrayBuffer());
+  const reimported = await inspectRankingWorkbook(bytes);
+  assert.equal(reimported.latestDate, '2026-10-08');
+  assert.equal(reimported.rows.length, 2);
+});
+
+
 test('imports previous rankings stored as inline or shared numeric text', async () => {
   const files = fixtureFiles();
   files['xl/sharedStrings.xml'] = files['xl/sharedStrings.xml']

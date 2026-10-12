@@ -92,6 +92,61 @@ test('one-column Keyword header is not treated as a search phrase', () => {
 });
 
 
+test('quoted newlines in CSV keywords do not create extra rows', () => {
+  const input = [
+    'Keyword,Website,Previous Rank',
+    '"best\nlocal dentist",example.com/dental,4',
+    'roof inspections,example.org/roof,9'
+  ].join('\n').replace('\\nlocal', '\nlocal');
+  const parsed = parseInputRows(input);
+  assert.deepEqual(parsed.errors, []);
+  assert.equal(parsed.valid.length, 2);
+  assert.equal(parsed.valid[0].keyword, 'best\nlocal dentist');
+  assert.equal(parsed.valid[0].targetUrl, 'https://example.com/dental');
+  assert.equal(parsed.valid[0].previousPosition, 4);
+  assert.equal(parsed.valid[0].line, 2);
+  assert.equal(parsed.valid[1].keyword, 'roof inspections');
+  assert.equal(parsed.valid[1].line, 4);
+});
+
+test('CRLF multiline quoted notes and escaped quotes keep line numbers and columns', () => {
+  const input = [
+    'Keyword,Website,Previous Rank,Notes',
+    '"roof ""leak"" repair",example.com,7,"first line\r\nsecond line"',
+    'clean gutters,example.org,10,ordinary'
+  ].join('\r\n').replace('\\r\\nsecond', '\r\nsecond');
+  const parsed = parseInputRows(input);
+  assert.deepEqual(parsed.errors, []);
+  assert.equal(parsed.valid.length, 2);
+  assert.equal(parsed.valid[0].keyword, 'roof "leak" repair');
+  assert.equal(parsed.valid[0].previousPosition, 7);
+  assert.equal(parsed.valid[0].line, 2);
+  assert.equal(parsed.valid[1].previousPosition, 10);
+  assert.equal(parsed.valid[1].line, 4);
+});
+
+test('unterminated quoted CSV field gets one clear line-numbered error', () => {
+  const input = [
+    'Keyword,Website,Previous Rank',
+    'valid keyword,example.com,4',
+    '"unfinished keyword,example.org,8'
+  ].join('\n');
+  const parsed = parseInputRows(input);
+  assert.equal(parsed.valid.length, 1);
+  assert.equal(parsed.valid[0].keyword, 'valid keyword');
+  assert.equal(parsed.errors.length, 1);
+  assert.equal(parsed.errors[0].line, 3);
+  assert.match(parsed.errors[0].message, /unterminated quoted field/i);
+});
+
+test('ordinary pasted rows and standalone CR line endings still split correctly', () => {
+  const parsed = parseInputRows('Keyword\tWebsite\tPrevious Rank\rone\texample.com\t3\rtwo\texample.org\t5');
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(parsed.valid.map(row => row.keyword), ['one', 'two']);
+  assert.deepEqual(parsed.valid.map(row => row.line), [2, 3]);
+});
+
+
 test('previous positions only become exact ranks when the whole value is a safe positive integer', () => {
   for (const [input, expected] of [
     ['12.5', '12.5'],
