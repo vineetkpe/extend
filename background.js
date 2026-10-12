@@ -201,6 +201,7 @@ async function activateVisibleGoogleLocation(location, domain, state) {
       message: 'Browser device coordinates verified in Google tab ' + tabId +
         ': ' + check.reported.latitude + ', ' + check.reported.longitude +
         '. The Google footer may still show your IP-based city. ' +
+        'Device GPS is verified, but Google Search may still choose rankings using IP, account or other signals. ' +
         'Only this tab is overridden; other tabs and your public IP are unchanged.'
     };
   } catch (error) {
