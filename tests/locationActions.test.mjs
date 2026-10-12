@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { STORAGE_KEYS } from '../utils/storage.js';
 
-function makeMockBrowser({ denied = false } = {}) {
+function makeMockBrowser({ denied = false, mismatchedDeviceLocation = false } = {}) {
   const stored = {};
   const tabsById = new Map();
   const listeners = new Set();
@@ -41,7 +41,8 @@ function makeMockBrowser({ denied = false } = {}) {
           };
         }
         if (method === 'Runtime.evaluate') {
-          cb({ result: { value: denied ? { error: 'User denied Geolocation' } : reported } });
+          cb({ result: { value: denied ? { error: 'User denied Geolocation' } :
+            mismatchedDeviceLocation ? { latitude: 0, longitude: 0 } : reported } });
           return;
         }
         if (method === 'Emulation.clearGeolocationOverride') reported = null;
@@ -145,4 +146,33 @@ test('APPLY_LOCATION verifies in visible Google tab, rather than claiming pendin
   assert.equal(result.verified, true);
   assert.equal(browser.tabsById.size, 1);
   assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationApplied, true);
+});
+
+
+test('large accuracy remains correct in applied session fingerprint', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('location-accuracy-150-priority');
+  const result = await browser.send({
+    action: 'APPLY_LOCATION',
+    location: { latitude: 28.6139, longitude: 77.209, accuracy: 150 }
+  });
+  assert.equal(result.success, true);
+  const job = browser.stored[STORAGE_KEYS.JOB_STATE];
+  assert.deepEqual(job.appliedLocation, {
+    tabId: 50, latitude: 28.6139, longitude: 77.209, accuracy: 150
+  });
+  assert.equal(job.locationApplied, true);
+});
+
+test('location Test fails closed if Google page reports different device coordinates', async () => {
+  const browser = makeMockBrowser({ mismatchedDeviceLocation: true });
+  await browser.startWorker('location-device-gps-mismatch-priority');
+  const result = await browser.send({
+    action: 'TEST_LOCATION',
+    location: { latitude: 28.6139, longitude: 77.209, accuracy: 20 }
+  });
+  assert.equal(result.success, false);
+  assert.match(result.error, /did not report the configured coordinates/i);
+  assert.ok(!browser.stored[STORAGE_KEYS.JOB_STATE].locationApplied);
+  assert.ok(browser.commands.some(row => row[0] === 'Emulation.clearGeolocationOverride'));
 });
