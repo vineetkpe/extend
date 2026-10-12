@@ -325,14 +325,16 @@ function rankingValue(result) {
 
   const verifiedRank = result.status === 'EXACT PAGE' ||
     result.matchStatus === 'EXACT PAGE';
+  const verifiedAbsence = result.status === 'TARGET PAGE NOT FOUND' ||
+    result.matchStatus === 'TARGET PAGE NOT FOUND' ||
+    result.matchStatus === 'OTHER DOMAIN PAGE FOUND';
+  // Contradictory check metadata must not turn into a claimed measurement.
+  if (verifiedRank && verifiedAbsence) return 'NOT CHECKED';
   if (verifiedRank && typeof result.currentPosition === 'number' &&
       Number.isSafeInteger(result.currentPosition) && result.currentPosition > 0) {
     return result.currentPosition;
   }
 
-  const verifiedAbsence = result.status === 'TARGET PAGE NOT FOUND' ||
-    result.matchStatus === 'TARGET PAGE NOT FOUND' ||
-    result.matchStatus === 'OTHER DOMAIN PAGE FOUND';
   if (verifiedAbsence && result.currentPosition === 'Not Found') return 'NA';
   return 'NOT CHECKED';
 }
