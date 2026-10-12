@@ -106,3 +106,27 @@ test('different domains are not considered matches', () => {
     { match: false, isSameDomain: false, type: MATCH_TYPES.NOT_FOUND }
   );
 });
+
+
+test('ref and source values remain part of exact landing-page identity', () => {
+  for (const key of ['ref', 'source']) {
+    const a = 'https://example.com/product?' + key + '=offer-a';
+    const b = 'https://example.com/product?' + key + '=offer-b';
+    assert.equal(normalizeUrl(a), 'example.com/product?' + key + '=offer-a');
+    assert.notEqual(normalizeUrl(a), normalizeUrl(b));
+    assert.deepEqual(matchUrl(a, b), {
+      match: false, isSameDomain: true, type: MATCH_TYPES.OTHER_DOMAIN_PAGE
+    });
+  }
+});
+
+test('source and ref parameters survive when legitimate tracking parameters are removed', () => {
+  const tracked = 'https://www.example.com/page?source=blue&ref=sku-1&utm_source=email&gclid=abc';
+  const clean = 'https://example.com/page?ref=sku-1&source=blue';
+  assert.equal(normalizeUrl(tracked), normalizeUrl(clean));
+  assert.equal(matchUrl(tracked, clean).type, MATCH_TYPES.EXACT_PAGE);
+  assert.notEqual(
+    normalizeUrl('https://example.com/page?ref=sku-1'),
+    normalizeUrl('https://example.com/page?ref=sku-2')
+  );
+});
