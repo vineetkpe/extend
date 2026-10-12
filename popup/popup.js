@@ -1117,6 +1117,7 @@ function attachEventListeners() {
 
     chrome.runtime.sendMessage({
       action: 'APPLY_LOCATION',
+      googleDomain: googleDomainSelect?.value || 'google.com',
       location: {
         latitude: validation.latitude,
         longitude: validation.longitude,
@@ -1151,6 +1152,7 @@ function attachEventListeners() {
     showLocationMessage('Testing location override in Google tab...', true);
     chrome.runtime.sendMessage({
       action: 'TEST_LOCATION',
+      googleDomain: googleDomainSelect?.value || 'google.com',
       location: {
         latitude: validation.latitude,
         longitude: validation.longitude,
