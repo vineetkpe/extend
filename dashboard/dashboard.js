@@ -175,6 +175,7 @@ const el = {
   defaultTargetSite: document.getElementById('default-target-site'),
   workbookFile: document.getElementById('workbook-file'),
   workbookDate: document.getElementById('workbook-date'),
+  workbookDateOrder: document.getElementById('workbook-date-order'),
   workbookStatus: document.getElementById('workbook-import-status'),
   workbookSheet: document.getElementById('workbook-sheet'),
   workbookHeaderRow: document.getElementById('workbook-header-row'),
@@ -650,7 +651,11 @@ function renderJobState(state) {
     const offsetStr = state.currentSerpOffset ? ` (page offset start=${state.currentSerpOffset})` : '';
     el.progActivity.textContent = `Checking: "${state.currentKeyword}"${offsetStr}...`;
   } else if (status === 'COMPLETED') {
-    el.progActivity.textContent = 'Batch completed successfully.';
+    const failures = (state.results || []).filter(r => r &&
+      (r.status === 'ERROR' || r.matchStatus === 'ERROR')).length;
+    el.progActivity.textContent = failures
+      ? `Batch finished with ${failures} failed keyword check(s). Review errors or use Retry Failed.`
+      : 'Batch completed successfully.';
   } else if (status === 'PAUSED') {
     el.progActivity.textContent = 'Paused. Click RESUME to continue.';
   } else if (status === 'BLOCKED') {
@@ -1355,7 +1360,10 @@ function setupEventListeners() {
   async function useWorkbookMapping(options = {}) {
     if (!pendingWorkbookUpload) throw new Error('Select a workbook first.');
     const { bytes, filename } = pendingWorkbookUpload;
-    const inspected = await inspectRankingWorkbook(bytes, options);
+    const inspected = await inspectRankingWorkbook(bytes, {
+      ...options,
+      dateOrder: el.workbookDateOrder.value
+    });
     importedWorkbook = {
       bytes, inspected, filename,
       projectId: activeProject ? activeProject.id : null,
@@ -1667,7 +1675,7 @@ function setupEventListeners() {
   });
 
   // Bug 4 Fix: Enforce results are bound to active project ID before copying/exporting
-  el.btnCopyPositions.addEventListener('click', () => {
+  el.btnCopyPositions.addEventListener('click', async () => {
     if (!currentJobState || !currentJobState.results || currentJobState.results.length === 0) {
       showToast('No results to copy.', 'error');
       return;
@@ -1677,11 +1685,13 @@ function setupEventListeners() {
       return;
     }
     const tsvData = exportToCurrentPositionsOnly(currentJobState.results);
-    copyToClipboard(tsvData);
-    showToast(`Copied ${currentJobState.results.length} positions to clipboard! Ready to paste into Excel.`, 'success');
+    const copied = await copyToClipboard(tsvData);
+    showToast(copied
+      ? `Copied ${currentJobState.results.length} positions to clipboard! Ready to paste into Excel.`
+      : 'Could not copy positions. Check clipboard permissions and try again.', copied ? 'success' : 'error');
   });
 
-  el.btnCopyAll.addEventListener('click', () => {
+  el.btnCopyAll.addEventListener('click', async () => {
     if (!currentJobState || !currentJobState.results || currentJobState.results.length === 0) {
       showToast('No results to copy.', 'error');
       return;
@@ -1691,8 +1701,9 @@ function setupEventListeners() {
       return;
     }
     const tsvData = exportToTsv(currentJobState.results);
-    copyToClipboard(tsvData);
-    showToast('Copied full results table as TSV.', 'success');
+    const copied = await copyToClipboard(tsvData);
+    showToast(copied ? 'Copied full results table as TSV.'
+      : 'Could not copy results. Check clipboard permissions and try again.', copied ? 'success' : 'error');
   });
 
   el.btnDownloadCsv.addEventListener('click', () => {
