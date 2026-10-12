@@ -330,3 +330,36 @@ test('blank client latitude or longitude does not silently become 0,0', async ()
   assert.equal(inspected.location.latitude, '');
   assert.equal(inspected.location.longitude, '');
 });
+
+
+test('text date headers support explicitly selected day/month/year order', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replaceAll('<v>46300</v>', '<is><t>05/10/2027</t></is>')
+    .replaceAll('r="G2" s="26"', 'r="G2" t="inlineStr"')
+    .replaceAll('r="G9" s="26"', 'r="G9" t="inlineStr"');
+  const bytes = zipStored(files);
+  const dmy = await inspectRankingWorkbook(bytes, { dateOrder: 'DMY' });
+  const mdy = await inspectRankingWorkbook(bytes, { dateOrder: 'MDY' });
+  assert.equal(dmy.latestDate, '2027-10-05');
+  assert.equal(mdy.latestDate, '2027-05-10');
+});
+
+test('invalid text ranking dates fail validation instead of rolling into another month', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace('<c r="G9" s="26"><v>46300</v></c>',
+      '<c r="G9" t="inlineStr"><is><t>31/02/2026</t></is></c>');
+  await assert.rejects(
+    () => inspectRankingWorkbook(zipStored(files), { dateOrder: 'DMY' }),
+    /Invalid ranking date header/
+  );
+});
+
+test('column formatting spans crossing inserted ranking history are rejected during import', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml'].replace(
+    '<sheetData>', '<cols><col min="6" max="8" width="15" customWidth="1"/></cols><sheetData>');
+  await assert.rejects(() => inspectRankingWorkbook(zipStored(files)),
+    /column formatting span crosses the ranking history boundary/);
+});

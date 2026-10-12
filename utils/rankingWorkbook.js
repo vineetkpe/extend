@@ -80,17 +80,29 @@ async function sharedStringsFor(zip) {
 const KEYWORD_HEADERS = new Set(['keyword', 'keywords', 'search term', 'search terms', 'search query', 'query', 'target keyword', 'target keywords']);
 const URL_HEADERS = new Set(['landing page', 'landing page url', 'target url', 'target page', 'page url', 'website url', 'site url', 'url', 'website', 'domain', 'target domain', 'web page']);
 
-function dateSerialForCell(value) {
+function dateSerialForCell(value, dateOrder = 'MDY') {
   if (typeof value === 'number' && value > 40000 && value < 80000) return value;
   if (typeof value !== 'string') return null;
   const cleaned = value.trim();
-  let parsed = null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) parsed = Date.parse(cleaned + 'T00:00:00Z');
-  else if (/^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(cleaned)) {
-    const [a, b, year] = cleaned.split(/[/-]/).map(Number);
-    parsed = Date.UTC(year, a - 1, b);
+  let year, month, day;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+    [year, month, day] = cleaned.split('-').map(Number);
+  } else if (/^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(cleaned)) {
+    const [first, second, yyyy] = cleaned.split(/[/-]/).map(Number);
+    year = yyyy;
+    month = dateOrder === 'DMY' ? second : first;
+    day = dateOrder === 'DMY' ? first : second;
+  } else {
+    return null;
   }
-  return Number.isFinite(parsed) ? Math.floor(parsed / 86400000) + 25569 : null;
+  const parsed = Date.UTC(year, month - 1, day);
+  const verified = new Date(parsed);
+  if (verified.getUTCFullYear() !== year ||
+      verified.getUTCMonth() + 1 !== month ||
+      verified.getUTCDate() !== day) {
+    throw new Error('Invalid ranking date header: "' + cleaned + '". Check its date format.');
+  }
+  return Math.floor(parsed / 86400000) + 25569;
 }
 
 function getHeaderMapping(sheet, strings, mapping = {}) {
@@ -108,7 +120,7 @@ function getHeaderMapping(sheet, strings, mapping = {}) {
     }
     if (!keywordColumn || !urlColumn || keywordColumn === urlColumn) continue;
     const dates = Array.from(byColumn, ([column, cell]) => ({
-      column, serial: dateSerialForCell(cellValue(cell, strings))
+      column, serial: dateSerialForCell(cellValue(cell, strings), mapping.dateOrder)
     })).filter(item => item.column > Math.max(keywordColumn, urlColumn) &&
       item.serial !== null);
     const latest = dates.length ? dates.reduce((prev, cur) => cur.serial > prev.serial ? cur : prev) : null;
@@ -181,6 +193,9 @@ export async function listRankingWorkbookSheets(bytes) {
  * updating a later export. Does not store/return unrelated tabs or client data.
  */
 export async function inspectRankingWorkbook(bytes, options = {}) {
+  if (options.dateOrder && !['MDY', 'DMY'].includes(options.dateOrder)) {
+    throw new Error('Choose MDY or DMY for text-formatted date headers.');
+  }
   const zip = new WorkbookZip(bytes);
   const workbook = await readXml(zip, 'xl/workbook.xml');
   const rels = await readXml(zip, 'xl/_rels/workbook.xml.rels');
@@ -203,7 +218,7 @@ export async function inspectRankingWorkbook(bytes, options = {}) {
       selectedSheet = name;
       break;
     } catch (error) {
-      if (desiredSheet) throw error;
+      if (desiredSheet || /^Invalid ranking date header:/.test(error.message)) throw error;
     }
   }
   if (!organic || !header) {
@@ -286,6 +301,13 @@ function assertSafeToInsert(sheet, firstColumn) {
   const sheetsWithReferences = ['conditionalFormatting', 'dataValidation', 'hyperlink'];
   if (sheetsWithReferences.some(tag => allElements(sheet, tag).length)) {
     throw new Error('Keyword Ranking contains advanced cell references; please export CSV or use a simpler workbook.');
+  }
+  // Reject unsupported formatting spans during import, not after the rank checks.
+  for (const col of allElements(sheet, 'col')) {
+    const first = Number(col.getAttribute('min')), last = Number(col.getAttribute('max'));
+    if (first < firstColumn && last >= firstColumn) {
+      throw new Error('A column formatting span crosses the ranking history boundary.');
+    }
   }
   for (const merge of allElements(sheet, 'mergeCell')) {
     const range = merge.getAttribute('ref') || '';

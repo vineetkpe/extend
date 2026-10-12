@@ -136,7 +136,8 @@ export function exportToCsv(results) {
       escapeCsvField(r.checkedDepth || 0),
       escapeCsvField(r.foundUrl || ''),
       escapeCsvField(otherDomainStr),
-      escapeCsvField(r.checkedAt || new Date().toISOString())
+      // A missing timestamp means no verified check time, not "checked now".
+      escapeCsvField(r.checkedAt ?? '')
     ].join(',');
   });
 
@@ -159,14 +160,29 @@ export function exportToCurrentPositionsOnly(results) {
 
   return results.map(r => {
     if (!r) return 'NOT CHECKED';
-    if (r.status === 'ERROR' || r.currentPosition === 'Error') return 'ERROR';
-    if (r.status === 'NOT CHECKED' || r.currentPosition === 'NOT CHECKED' || r.currentPosition === '—' || r.currentPosition === null || r.currentPosition === undefined) {
+    // A result's status and matchStatus must both be respected. An error
+    // must never become a rank (or a verified absence) in an Excel report.
+    if (r.status === 'ERROR' || r.matchStatus === 'ERROR' ||
+        r.currentPosition === 'Error') return 'ERROR';
+    if (r.status === 'NOT CHECKED' || r.matchStatus === 'NOT_CHECKED' ||
+        r.currentPosition === 'NOT CHECKED' || r.currentPosition === '—' ||
+        r.currentPosition === null || r.currentPosition === undefined) {
       return 'NOT CHECKED';
     }
-    if (typeof r.currentPosition === 'number' || (!isNaN(Number(r.currentPosition)) && r.currentPosition !== '')) {
-      return String(r.currentPosition);
+    const value = r.currentPosition;
+    const numeric = typeof value === 'number' ? value
+      : (typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN);
+    if (Number.isSafeInteger(numeric) && numeric > 0) {
+      return String(numeric);
     }
-    return 'NOT FOUND';
+    // A missing rank is meaningful only after a completed, verified check.
+    if (value === 'Not Found' &&
+        (r.status === 'TARGET PAGE NOT FOUND' ||
+         r.matchStatus === 'TARGET PAGE NOT FOUND' ||
+         r.matchStatus === 'OTHER DOMAIN PAGE FOUND')) {
+      return 'NOT FOUND';
+    }
+    return 'NOT CHECKED';
   }).join('\n');
 }
 
