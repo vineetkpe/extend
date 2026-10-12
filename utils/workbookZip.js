@@ -92,10 +92,34 @@ export class WorkbookZip {
     const entry = this.entries.get(path);
     if (!entry) throw new Error('Workbook XML part missing: ' + path);
     if (entry.method === 0) return entry.compressed.slice();
-    const stream = new Blob([entry.compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-    const result = new Uint8Array(await new Response(stream).arrayBuffer());
-    if (result.length !== entry.uncompressedSize || result.length > MAX_ENTRY_BYTES ||
-        crc32(result) !== entry.crc) throw new Error('Workbook ZIP checksum/length mismatch.');
+    const stream = new Blob([entry.compressed]).stream()
+      .pipeThrough(new DecompressionStream('deflate-raw'));
+    const reader = stream.getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // Do not inflate the entire ZIP part before checking its size.
+        // Malicious archives can claim a tiny uncompressed size while
+        // expanding far beyond the 30 MB per-entry limit.
+        size += value.byteLength;
+        if (size > MAX_ENTRY_BYTES || size > entry.uncompressedSize) {
+          throw new Error('Workbook ZIP checksum/length mismatch.');
+        }
+        chunks.push(value);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+    const result = chunksToBytes(chunks);
+    if (result.length !== entry.uncompressedSize || crc32(result) !== entry.crc) {
+      throw new Error('Workbook ZIP checksum/length mismatch.');
+    }
     return result;
   }
 

@@ -330,3 +330,51 @@ test('blank client latitude or longitude does not silently become 0,0', async ()
   assert.equal(inspected.location.latitude, '');
   assert.equal(inspected.location.longitude, '');
 });
+
+
+test('over-expanding XLSX deflate entries are rejected without unbounded response buffering', async () => {
+  const zip = new WorkbookZip(zipStored(fixtureFiles()));
+  const part = 'xl/worksheets/sheet2.xml';
+  const expanded = new Uint8Array(2 * 1024 * 1024).fill(65);
+  const compressed = new Uint8Array(await new Response(
+    new Blob([expanded]).stream().pipeThrough(new CompressionStream('deflate-raw'))
+  ).arrayBuffer());
+  // Forge the ZIP metadata to claim a tiny file while the deflate payload
+  // expands to megabytes. The reader must stop as soon as the size is exceeded.
+  zip.entries.set(part, {
+    ...zip.entries.get(part), method: 8, compressed,
+    uncompressedSize: 32, crc: crc32(expanded)
+  });
+  const archive = new WorkbookZip(new Uint8Array(await zip.toBlob().arrayBuffer()));
+
+  // Regression guard: collecting an entire decompressed stream through
+  // Response.arrayBuffer() would reintroduce unbounded memory allocation.
+  const originalResponse = globalThis.Response;
+  globalThis.Response = class {
+    constructor() { throw new Error('Unbounded Response stream buffering'); }
+  };
+  try {
+    await assert.rejects(() => archive.read(part), /Workbook ZIP checksum\/length mismatch/);
+  } finally {
+    globalThis.Response = originalResponse;
+  }
+});
+
+test('bounded XLSX deflate reader still accepts valid and rejects corrupt data', async () => {
+  const zip = new WorkbookZip(zipStored(fixtureFiles()));
+  const part = 'xl/worksheets/sheet2.xml';
+  const plain = te.encode(fixtureFiles()[part]);
+  const compressed = new Uint8Array(await new Response(
+    new Blob([plain]).stream().pipeThrough(new CompressionStream('deflate-raw'))
+  ).arrayBuffer());
+  zip.entries.set(part, {
+    ...zip.entries.get(part), method: 8, compressed,
+    uncompressedSize: plain.length, crc: crc32(plain)
+  });
+  const archive = new WorkbookZip(new Uint8Array(await zip.toBlob().arrayBuffer()));
+  assert.deepEqual(await archive.read(part), plain);
+
+  // Invalid checksum must fail even when the decompressed size is within limit.
+  archive.entries.get(part).crc ^= 1;
+  await assert.rejects(() => archive.read(part), /Workbook ZIP checksum\/length mismatch/);
+});
