@@ -5,7 +5,11 @@
  * and Google redirect wrappers.
  */
 
-// Tracking parameters to strip out
+import { supportedGoogleDomain } from './locationPreview.js';
+
+// Strip known tracking-only parameters. Do not strip ambiguous keys like
+// "ref" or "source": on some sites these distinguish different content, and
+// removing them could report a different landing page as an exact match.
 const TRACKING_PARAMS = new Set([
   'utm_source',
   'utm_medium',
@@ -15,8 +19,6 @@ const TRACKING_PARAMS = new Set([
   'gclid',
   'fbclid',
   'msclkid',
-  'ref',
-  'source',
   'ved',
   'usg',
   'ei',
@@ -25,11 +27,9 @@ const TRACKING_PARAMS = new Set([
   'dpr'
 ]);
 
-// Only actual Google search hosts may supply /url?q= redirect wrappers.
-const GOOGLE_REDIRECT_HOSTS = new Set([
-  'google.com', 'google.co.uk', 'google.co.in', 'google.com.au',
-  'google.ca', 'google.de', 'google.fr'
-]);
+// Only explicitly supported Google country domains may supply /url?q=
+// redirect wrappers. Reuse the allowlist shared with Google search tabs so
+// region-specific results don't lose their landing-page identity.
 
 /**
  * Unwrap a genuine Google search redirect; leave unrelated URLs untouched.
@@ -44,7 +44,7 @@ export function cleanGoogleRedirect(rawUrl) {
   try {
     const parsed = new URL(value, relativeRedirect ? 'https://www.google.com' : undefined);
     const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
-    if (parsed.pathname !== '/url' || !GOOGLE_REDIRECT_HOSTS.has(host)) {
+    if (parsed.pathname !== '/url' || !supportedGoogleDomain(host)) {
       return relativeRedirect ? '' : value;
     }
     const destination = parsed.searchParams.get('q') || parsed.searchParams.get('url');

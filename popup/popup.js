@@ -12,6 +12,7 @@
  */
 
 import { parseInputRows } from '../utils/parser.js';
+import { describePopupResult, countVerifiedPopupResults } from '../utils/popupResultPresentation.js';
 import { getProjectInputDraft, saveProjectInputDraft, formatSavedKeywordRows } from '../utils/projectInputDraft.js';
 import {
   exportToTsv,
@@ -26,7 +27,7 @@ import {
   SESSION_STORAGE_UNAVAILABLE_ERROR
 } from '../utils/storage.js';
 import { validateCoordinates } from '../utils/locationValidator.js';
-import { getRememberedCoordinates, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
+import { getRememberedCoordinates, getRememberedCoordinateDraft, rememberCoordinateDraft, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
 import {
   getProjects,
   getActiveProject,
@@ -168,7 +169,7 @@ function renderLocationStatus(isApplied = false, details = null, needsReapply = 
     locationStatusIndicator.textContent = 'LOCATION NEEDS REAPPLY';
     locationStatusIndicator.className = 'location-status-badge status-warning';
   } else if (isApplied && details && details.latitude !== undefined && details.longitude !== undefined) {
-    locationStatusIndicator.textContent = `LOCATION: ACTIVE (${details.latitude}, ${details.longitude})`;
+    locationStatusIndicator.textContent = `DEVICE GEO VERIFIED (${details.latitude}, ${details.longitude})`;
     locationStatusIndicator.className = 'location-status-badge status-active';
   } else if (isConfigured || (details && details.latitude !== undefined)) {
     locationStatusIndicator.textContent = 'LOCATION: CONFIGURED — WILL APPLY WHEN RANK CHECK STARTS';
@@ -324,8 +325,18 @@ function renderResultsTable(results) {
     return;
   }
 
-  currentResults = results || [];
-  if (resultsCount) resultsCount.textContent = `${currentResults.length} checked`;
+  currentResults = Array.isArray(results) ? results : [];
+  if (resultsCount) {
+    const validRows = currentResults.filter(Boolean);
+    const verified = countVerifiedPopupResults(validRows);
+    const pending = validRows.filter(row => describePopupResult(row).kind === 'pending').length;
+    const errors = validRows.filter(row => describePopupResult(row).kind === 'error').length;
+    resultsCount.textContent = [
+      `${verified} checked`,
+      ...(pending ? [`${pending} pending`] : []),
+      ...(errors ? [`${errors} errors`] : [])
+    ].join(' · ');
+  }
 
   if (currentResults.length === 0) {
     resultsTableBody.replaceChildren();
@@ -366,88 +377,48 @@ function renderResultsTable(results) {
     tdPrev.textContent = String(r.previousPosition || '-');
     tr.appendChild(tdPrev);
 
-    // 4. Current
+    const display = describePopupResult(r, currentJobState?.status);
+
+    // 4. Current organic rank: never label an unverified row Not Found.
     const tdCur = document.createElement('td');
     tdCur.className = 'text-center';
-    if (r.matchStatus === 'EXACT PAGE') {
-      const strong = document.createElement('strong');
-      strong.textContent = String(r.currentPosition || '');
-      tdCur.appendChild(strong);
-    } else {
-      const span = document.createElement('span');
-      span.className = 'not-found-text';
-      if (r.status === 'ERROR') {
-        span.textContent = 'Error';
-      } else {
-        const depthText = r.checkedDepth ? `Not Found (Top ${r.checkedDepth})` : 'Not Found';
-        span.textContent = depthText;
-      }
-      tdCur.appendChild(span);
+    const current = document.createElement(display.kind === 'exact' ? 'strong' : 'span');
+    if (display.kind !== 'exact') {
+      current.className = display.kind === 'not-found' ? 'not-found-text' : 'not-checked-text';
     }
+    current.textContent = display.rankText;
+    tdCur.appendChild(current);
     tr.appendChild(tdCur);
 
-    // 5. Change
+    // 5. Change is meaningful only for verified organic results.
     const tdChange = document.createElement('td');
+    const change = display.kind === 'exact' || display.kind === 'not-found'
+      ? (r.change || '—') : '—';
     let changeClass = 'change-same';
-    if (r.change && r.change.includes('↑')) changeClass = 'change-up';
-    else if (r.change && r.change.includes('↓')) changeClass = 'change-down';
+    if (change.includes('↑')) changeClass = 'change-up';
+    else if (change.includes('↓')) changeClass = 'change-down';
     tdChange.className = `text-center ${changeClass}`;
-    tdChange.textContent = r.change || '—';
+    tdChange.textContent = change;
     tr.appendChild(tdChange);
 
-    // 6. Match
+    // 6. Match and its evidence, including explicit pending or error states.
     const tdMatch = document.createElement('td');
     const matchBadge = document.createElement('span');
-    let matchBadgeClass = 'badge-not-found';
-    let matchLabel = 'NOT FOUND';
-
-    if (r.matchStatus === 'EXACT PAGE') {
-      matchBadgeClass = 'badge-exact';
-      matchLabel = 'EXACT PAGE';
-    } else if (r.matchStatus === 'OTHER DOMAIN PAGE FOUND') {
-      matchBadgeClass = 'badge-other-domain';
-      matchLabel = 'OTHER DOMAIN FOUND';
-    } else if (r.status === 'ERROR') {
-      matchBadgeClass = 'badge-error';
-      matchLabel = 'ERROR';
-    }
-    matchBadge.className = `rank-badge ${matchBadgeClass}`;
-    matchBadge.textContent = matchLabel;
+    matchBadge.className = `rank-badge ${display.badgeClass}`;
+    matchBadge.textContent = display.matchText;
     tdMatch.appendChild(matchBadge);
-
-    if (r.matchStatus === 'EXACT PAGE') {
-      const sub = document.createElement('span');
-      sub.className = 'sub-info';
-      sub.textContent = `Checked depth: ${r.checkedDepth || 0}`;
-      tdMatch.appendChild(sub);
-    } else if (r.matchStatus === 'OTHER DOMAIN PAGE FOUND') {
-      const sub = document.createElement('span');
-      sub.className = 'sub-info';
-      sub.title = r.otherPageFound || '';
-      sub.textContent = `Other page ranks at pos ${r.otherPagePosition || '?'}`;
-      tdMatch.appendChild(sub);
-    } else if (r.status === 'ERROR') {
-      const sub = document.createElement('span');
-      sub.className = 'sub-info';
-      sub.title = r.error || '';
-      sub.textContent = r.error || 'Error';
-      tdMatch.appendChild(sub);
-    } else {
-      const sub = document.createElement('span');
-      sub.className = 'sub-info';
-      sub.textContent = `Checked ${r.checkedDepth || 0} results`;
-      tdMatch.appendChild(sub);
-    }
+    const detail = document.createElement('span');
+    detail.className = 'sub-info';
+    detail.textContent = display.detail;
+    if (display.detailTitle) detail.title = display.detailTitle;
+    tdMatch.appendChild(detail);
     tr.appendChild(tdMatch);
 
-    // 7. Status
+    // 7. Status always agrees with the verified state of the result.
     const tdStatus = document.createElement('td');
     const statusBadgeElem = document.createElement('span');
-    statusBadgeElem.className = `rank-badge ${matchBadgeClass}`;
-    let statusLabel = 'TARGET NOT FOUND';
-    if (r.matchStatus === 'EXACT PAGE') statusLabel = 'EXACT PAGE';
-    else if (r.status === 'ERROR') statusLabel = 'ERROR';
-    statusBadgeElem.textContent = statusLabel;
+    statusBadgeElem.className = `rank-badge ${display.badgeClass}`;
+    statusBadgeElem.textContent = display.statusText;
     tdStatus.appendChild(statusBadgeElem);
     tr.appendChild(tdStatus);
 
@@ -701,8 +672,10 @@ function saveCurrentSettings() {
 async function restoreLocationFields(project) {
   if (!project) return;
   const cfg = project.config || project;
-  const remembered = await getRememberedCoordinates();
-  const location = getLocationForProject(cfg, remembered);
+  const [remembered, draft] = await Promise.all([
+    getRememberedCoordinates(), getRememberedCoordinateDraft()
+  ]);
+  const location = getLocationForProject(cfg, remembered, draft);
   if (useLocationCheckbox) useLocationCheckbox.checked =
     Boolean(cfg.useLocation && location.source === 'project');
   if (locationNameInput) locationNameInput.value = cfg.locationName || '';
@@ -711,24 +684,28 @@ async function restoreLocationFields(project) {
   if (accuracyInput) accuracyInput.value = location.accuracy;
 }
 
-/** Save a complete, valid coordinate pair without requiring Apply Location. */
+/** Save even a single coordinate as soon as the user types it.
+ * Chrome closes its popup when users switch away to copy the other coordinate.
+ * A complete valid pair is separately remembered for safe Apply/Test.
+ */
 async function persistEditedLocation() {
-  if (!activeProject) return;
-  const validation = validateCoordinates(
-    latitudeInput?.value, longitudeInput?.value, accuracyInput?.value
-  );
-  if (!validation.valid) return;
+  const project = activeProject;
+  const latitude = latitudeInput?.value.trim() ?? '';
+  const longitude = longitudeInput?.value.trim() ?? '';
+  const accuracy = accuracyInput?.value.trim() || '20';
+  const config = {
+    latitude, longitude, accuracy,
+    locationName: locationNameInput?.value.trim() || '',
+    locationDraftEdited: true
+  };
+  // Update the UI's project snapshot immediately before any async storage.
+  if (project) Object.assign(project.config || project, config);
   try {
-    const result = await rememberCoordinates(validation);
-    if (!result.saved) throw new Error(result.error);
-    const config = {
-      latitude: String(validation.latitude),
-      longitude: String(validation.longitude),
-      accuracy: validation.accuracy,
-      locationName: locationNameInput?.value.trim() || ''
-    };
-    await updateProject(activeProject.id, config);
-    Object.assign(activeProject.config || activeProject, config);
+    const draftSaved = await rememberCoordinateDraft({ latitude, longitude, accuracy });
+    if (!draftSaved.saved) return; // Invalid text remains visible for correction.
+    if (project) await updateProject(project.id, config);
+    const validation = validateCoordinates(latitude, longitude, accuracy);
+    if (validation.valid) await rememberCoordinates(validation);
   } catch (error) {
     showLocationMessage('Could not remember coordinates: ' + error.message, false);
   }
@@ -1058,10 +1035,13 @@ function attachEventListeners() {
     });
   }
 
-  // Persist valid coordinates when a field loses focus, so switching views
-  // does not erase a pair that has not yet been applied through CDP.
+  // Input, not blur/change: a Chrome popup may close before focus changes
+  // while the user copies longitude from another app or tab.
   for (const element of [latitudeInput, longitudeInput, accuracyInput, locationNameInput]) {
-    if (element) element.addEventListener('change', persistEditedLocation);
+    if (element) {
+      element.addEventListener('input', persistEditedLocation);
+      element.addEventListener('change', persistEditedLocation);
+    }
   }
 
   // 8. Location configuration toggles
@@ -1108,6 +1088,7 @@ function attachEventListeners() {
 
     chrome.runtime.sendMessage({
       action: 'APPLY_LOCATION',
+      googleDomain: googleDomainSelect?.value || 'google.com',
       location: {
         latitude: validation.latitude,
         longitude: validation.longitude,
@@ -1142,6 +1123,7 @@ function attachEventListeners() {
     showLocationMessage('Testing location override in Google tab...', true);
     chrome.runtime.sendMessage({
       action: 'TEST_LOCATION',
+      googleDomain: googleDomainSelect?.value || 'google.com',
       location: {
         latitude: validation.latitude,
         longitude: validation.longitude,

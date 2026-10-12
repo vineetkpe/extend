@@ -58,6 +58,8 @@ export function getWorkerRestartPatch(state) {
         matchStatus: 'NOT_CHECKED',
         status: 'NOT CHECKED',
         checkedDepth: 0,
+        // A provisional rank must never retain an auditable organic result.
+        organicAudit: [],
         foundUrl: null,
         otherPageFound: null,
         otherPagePosition: null,

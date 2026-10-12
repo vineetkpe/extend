@@ -330,3 +330,264 @@ test('blank client latitude or longitude does not silently become 0,0', async ()
   assert.equal(inspected.location.latitude, '');
   assert.equal(inspected.location.longitude, '');
 });
+
+
+test('over-expanding XLSX deflate entries are rejected without unbounded response buffering', async () => {
+  const zip = new WorkbookZip(zipStored(fixtureFiles()));
+  const part = 'xl/worksheets/sheet2.xml';
+  const expanded = new Uint8Array(2 * 1024 * 1024).fill(65);
+  const compressed = new Uint8Array(await new Response(
+    new Blob([expanded]).stream().pipeThrough(new CompressionStream('deflate-raw'))
+  ).arrayBuffer());
+  // Forge the ZIP metadata to claim a tiny file while the deflate payload
+  // expands to megabytes. The reader must stop as soon as the size is exceeded.
+  zip.entries.set(part, {
+    ...zip.entries.get(part), method: 8, compressed,
+    uncompressedSize: 32, crc: crc32(expanded)
+  });
+  const archive = new WorkbookZip(new Uint8Array(await zip.toBlob().arrayBuffer()));
+
+  // Regression guard: collecting an entire decompressed stream through
+  // Response.arrayBuffer() would reintroduce unbounded memory allocation.
+  const originalResponse = globalThis.Response;
+  globalThis.Response = class {
+    constructor() { throw new Error('Unbounded Response stream buffering'); }
+  };
+  try {
+    await assert.rejects(() => archive.read(part), /Workbook ZIP checksum\/length mismatch/);
+  } finally {
+    globalThis.Response = originalResponse;
+  }
+});
+
+test('bounded XLSX deflate reader still accepts valid and rejects corrupt data', async () => {
+  const zip = new WorkbookZip(zipStored(fixtureFiles()));
+  const part = 'xl/worksheets/sheet2.xml';
+  const plain = te.encode(fixtureFiles()[part]);
+  const compressed = new Uint8Array(await new Response(
+    new Blob([plain]).stream().pipeThrough(new CompressionStream('deflate-raw'))
+  ).arrayBuffer());
+  zip.entries.set(part, {
+    ...zip.entries.get(part), method: 8, compressed,
+    uncompressedSize: plain.length, crc: crc32(plain)
+  });
+  const archive = new WorkbookZip(new Uint8Array(await zip.toBlob().arrayBuffer()));
+  assert.deepEqual(await archive.read(part), plain);
+
+  // Invalid checksum must fail even when the decompressed size is within limit.
+  archive.entries.get(part).crc ^= 1;
+  await assert.rejects(() => archive.read(part), /Workbook ZIP checksum\/length mismatch/);
+});
+
+
+test('rejects mismatched local ZIP filenames before parsing workbook content', async () => {
+  const bytes = zipStored(fixtureFiles());
+  // The first local file header begins at offset zero. Its name begins at 30.
+  bytes[30] ^= 1; // central directory still names [Content_Types].xml
+  assert.throws(() => new WorkbookZip(bytes),
+    /Conflicting XLSX ZIP local and central headers/);
+  await assert.rejects(() => inspectRankingWorkbook(bytes),
+    /Conflicting XLSX ZIP local and central headers/);
+});
+
+test('rejects conflicting ZIP compression methods, flags and sizes', () => {
+  const mutations = [
+    ['method', bytes => new DataView(bytes.buffer).setUint16(8, 8, true)],
+    ['flags', bytes => new DataView(bytes.buffer).setUint16(6, 0, true)],
+    ['CRC', bytes => new DataView(bytes.buffer).setUint32(14, 1, true)],
+    ['compressed size', bytes => new DataView(bytes.buffer).setUint32(18, 10, true)],
+    ['uncompressed size', bytes => new DataView(bytes.buffer).setUint32(22, 10, true)]
+  ];
+  for (const [name, mutate] of mutations) {
+    const bytes = zipStored(fixtureFiles());
+    mutate(bytes);
+    assert.throws(() => new WorkbookZip(bytes),
+      /Conflicting XLSX ZIP local and central headers/, name);
+  }
+});
+
+test('valid stored XLSX entries still import, export and re-import', async () => {
+  const original = zipStored(fixtureFiles());
+  const inspected = await inspectRankingWorkbook(original);
+  assert.equal(inspected.rows.length, 2);
+  const updated = await buildUpdatedRankingWorkbook(
+    original, inspected, [], '2026-10-08');
+  const bytes = new Uint8Array(await updated.arrayBuffer());
+  const reimported = await inspectRankingWorkbook(bytes);
+  assert.equal(reimported.latestDate, '2026-10-08');
+  assert.equal(reimported.rows.length, 2);
+});
+
+
+test('imports previous rankings stored as inline or shared numeric text', async () => {
+  const files = fixtureFiles();
+  files['xl/sharedStrings.xml'] = files['xl/sharedStrings.xml']
+    .replace('</sst>', '<si><t> 12 </t></si></sst>');
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace('<c r="G10" s="82"><v>4</v></c>',
+      '<c r="G10" s="82" t="inlineStr"><is><t>007</t></is></c>')
+    .replace('<c r="G11" s="82" t="s"><v>5</v></c>',
+      '<c r="G11" s="82" t="s"><v>11</v></c>');
+  const inspected = await inspectRankingWorkbook(zipStored(files));
+  assert.deepEqual(inspected.rows.map(row => row.previousPosition), [7, 12]);
+  assert.equal(inspected.latestDate, '2026-10-05');
+});
+
+test('malformed numeric text does not fabricate previous ranks in XLSX import', async () => {
+  for (const value of ['12.5', '12abc', '1e3', '0', '9007199254740993']) {
+    const files = fixtureFiles();
+    files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+      .replace('<c r="G10" s="82"><v>4</v></c>',
+        '<c r="G10" s="82" t="inlineStr"><is><t>' + value + '</t></is></c>');
+    const inspected = await inspectRankingWorkbook(zipStored(files));
+    assert.equal(inspected.rows[0].previousPosition, '-', value);
+  }
+});
+
+test('fractional numeric XLSX cells cannot be treated as exact previous positions', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace('<c r="G10" s="82"><v>4</v></c>',
+      '<c r="G10" s="82"><v>4.5</v></c>');
+  const inspected = await inspectRankingWorkbook(zipStored(files));
+  assert.equal(inspected.rows[0].previousPosition, '-');
+});
+
+
+test('XLSX export never promotes stale or unverified ranking data', async () => {
+  const { bytes, inspected } = await fixture();
+  const cases = [
+    [{ status: 'NOT CHECKED', currentPosition: 4 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', matchStatus: 'NOT_CHECKED', currentPosition: 4 }, 'NOT CHECKED'],
+    [{ status: 'ERROR', currentPosition: 4 }, 'ERROR'],
+    [{ matchStatus: 'ERROR', currentPosition: 'Not Found' }, 'ERROR'],
+    [{ currentPosition: 'Not Found' }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', currentPosition: 0 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', currentPosition: 1.5 }, 'NOT CHECKED'],
+    [{ status: 'TARGET PAGE NOT FOUND', currentPosition: 8 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', matchStatus: 'TARGET PAGE NOT FOUND', currentPosition: 8 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', matchStatus: 'TARGET PAGE NOT FOUND', currentPosition: 'Not Found' }, 'NOT CHECKED']
+  ];
+  for (const [details, expected] of cases) {
+    const result = { id: 'workbook_row_10', ...details };
+    const blob = await buildUpdatedRankingWorkbook(bytes, inspected, [result], '2026-10-08');
+    const zip = new WorkbookZip(await blob.arrayBuffer());
+    const doc = new DOMParser().parseFromString(
+      td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+    assert.equal(cellValue(c(doc, 'G10')), expected, JSON.stringify(details));
+    // A different keyword's historic rank must stay untouched.
+    assert.equal(cellValue(c(doc, 'H11')), '5');
+  }
+});
+
+test('XLSX export continues to record verified rankings and verified absences', async () => {
+  const { bytes, inspected } = await fixture();
+  const blob = await buildUpdatedRankingWorkbook(bytes, inspected, [
+    { id: 'workbook_row_10', currentPosition: 7, matchStatus: 'EXACT PAGE' },
+    { id: 'workbook_row_11', currentPosition: 'Not Found', matchStatus: 'OTHER DOMAIN PAGE FOUND' }
+  ], '2026-10-08');
+  const zip = new WorkbookZip(await blob.arrayBuffer());
+  const doc = new DOMParser().parseFromString(
+    td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G10')), '7');
+  assert.equal(cellValue(c(doc, 'G11')), 'NA');
+});
+
+
+test('text date headers support explicitly selected day/month/year order', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replaceAll('<v>46300</v>', '<is><t>05/10/2027</t></is>')
+    .replaceAll('r="G2" s="26"', 'r="G2" t="inlineStr"')
+    .replaceAll('r="G9" s="26"', 'r="G9" t="inlineStr"');
+  const bytes = zipStored(files);
+  const dmy = await inspectRankingWorkbook(bytes, { dateOrder: 'DMY' });
+  const mdy = await inspectRankingWorkbook(bytes, { dateOrder: 'MDY' });
+  assert.equal(dmy.latestDate, '2027-10-05');
+  assert.equal(mdy.latestDate, '2027-05-10');
+});
+
+test('invalid text ranking dates fail validation instead of rolling into another month', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replace('<c r="G9" s="26"><v>46300</v></c>',
+      '<c r="G9" t="inlineStr"><is><t>31/02/2026</t></is></c>');
+  await assert.rejects(
+    () => inspectRankingWorkbook(zipStored(files), { dateOrder: 'DMY' }),
+    /Invalid ranking date header/
+  );
+});
+
+test('column formatting spans crossing inserted ranking history are rejected during import', async () => {
+  const files = fixtureFiles();
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml'].replace(
+    '<sheetData>', '<cols><col min="6" max="8" width="15" customWidth="1"/></cols><sheetData>');
+  await assert.rejects(() => inspectRankingWorkbook(zipStored(files)),
+    /column formatting span crosses the ranking history boundary/);
+});
+
+
+test('1904-date workbooks import the actual calendar dates and export matching serials', async () => {
+  const files = fixtureFiles();
+  files['xl/workbook.xml'] = files['xl/workbook.xml'].replace(
+    '<sheets>', '<workbookPr date1904="1"/><sheets>');
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replaceAll('<v>46300</v>', '<v>44838</v>')
+    .replaceAll('<v>46293</v>', '<v>44831</v>');
+  const bytes = zipStored(files);
+  const inspected = await inspectRankingWorkbook(bytes);
+  assert.equal(inspected.date1904, true);
+  assert.equal(inspected.latestDate, '2026-10-05');
+  assert.equal(inspected.latestDateSerial, 44838);
+  assert.deepEqual(inspected.rows.map(row => row.previousPosition), [4, '-']);
+  await assert.rejects(
+    () => buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-05'),
+    /later than the latest existing ranking date/
+  );
+
+  const updated = await buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-08');
+  const exported = new WorkbookZip(await updated.arrayBuffer());
+  const doc = new DOMParser().parseFromString(
+    td.decode(await exported.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G9')), '44841');
+  assert.equal(cellValue(c(doc, 'H9')), '44838');
+  assert.equal(cellValue(c(doc, 'I9')), '44831');
+  assert.equal(cellValue(c(doc, 'G2')), '44841');
+  assert.equal(td.decode(await exported.read('xl/workbook.xml')), files['xl/workbook.xml']);
+
+  const reimported = await inspectRankingWorkbook(new Uint8Array(await updated.arrayBuffer()));
+  assert.equal(reimported.date1904, true);
+  assert.equal(reimported.latestDate, '2026-10-08');
+});
+
+test('1904-date workbooks interpret string date headers in the same epoch', async () => {
+  const files = fixtureFiles();
+  files['xl/workbook.xml'] = files['xl/workbook.xml'].replace(
+    '<sheets>', '<workbookPr date1904="true"/><sheets>');
+  files['xl/worksheets/sheet2.xml'] = files['xl/worksheets/sheet2.xml']
+    .replaceAll('<v>46300</v>', '<v>44838</v>')
+    .replaceAll('<v>46293</v>', '<v>44831</v>')
+    .replace('<c r="G9" s="26"><v>44838</v></c>',
+      '<c r="G9" t="inlineStr"><is><t>2026-10-05</t></is></c>');
+  const bytes = zipStored(files);
+  const inspected = await inspectRankingWorkbook(bytes);
+  assert.equal(inspected.date1904, true);
+  assert.equal(inspected.latestDateSerial, 44838);
+  assert.equal(inspected.latestDate, '2026-10-05');
+  const output = await buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-08');
+  const zip = new WorkbookZip(await output.arrayBuffer());
+  const doc = new DOMParser().parseFromString(
+    td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G9')), '44841');
+});
+
+test('workbooks without date1904 keep the 1900-date system unchanged', async () => {
+  const { bytes, inspected } = await fixture();
+  assert.equal(inspected.date1904, false);
+  assert.equal(inspected.latestDateSerial, 46300);
+  const updated = await buildUpdatedRankingWorkbook(bytes, inspected, [], '2026-10-08');
+  const zip = new WorkbookZip(await updated.arrayBuffer());
+  const doc = new DOMParser().parseFromString(
+    td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G9')), '46303');
+});

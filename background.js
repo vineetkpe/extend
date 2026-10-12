@@ -35,7 +35,8 @@ import {
 import { getProjects, getActiveProject } from './utils/projectManager.js';
 import { mayStartNewJob, makeFailedRetryPlan } from './utils/jobRetry.js';
 import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/geolocationProof.js';
-import { getVisibleGoogleLocationTab } from './utils/locationPreview.js';
+import { getVisibleGoogleLocationTab, isGoogleLocationTab, supportedGoogleDomain } from './utils/locationPreview.js';
+import { getSafeRankSearchTab } from './utils/rankSearchTab.js';
 import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
 // Queue loop lifecycle management
@@ -182,6 +183,14 @@ async function activateVisibleGoogleLocation(location, domain, state) {
   const tabId = opened.tab.id;
   try {
     await applyGeolocationOverride(tabId, location, domain);
+    // A newly opened Google Search tab was loaded before the CDP override.
+    // Reload the SAME search URL under the requested device coordinates,
+    // then verify geolocation on the resulting document, not the old page.
+    const currentTab = await chrome.tabs.get(tabId);
+    if (!isGoogleLocationTab(currentTab, domain)) {
+      throw new Error('Google tab left the expected Search results page.');
+    }
+    await navigateAndWaitForTab(tabId, currentTab.url);
     const check = await verifyPageDeviceLocation(tabId, location);
     if (!check.valid) {
       await clearGeolocationOverride(tabId);
@@ -201,6 +210,7 @@ async function activateVisibleGoogleLocation(location, domain, state) {
       message: 'Browser device coordinates verified in Google tab ' + tabId +
         ': ' + check.reported.latitude + ', ' + check.reported.longitude +
         '. The Google footer may still show your IP-based city. ' +
+        'Device GPS is verified, but Google Search may still choose rankings using IP, account or other signals. ' +
         'Only this tab is overridden; other tabs and your public IP are unchanged.'
     };
   } catch (error) {
@@ -1039,33 +1049,6 @@ async function ensureLocationApplied(tabId, runId, settings) {
 }
 
 /**
- * Ensures a visible search tab exists, either reusing an existing one or creating a new tab.
- * @param {number|null} existingTabId 
- * @param {object|null} settings
- * @returns {Promise<chrome.tabs.Tab>}
- */
-async function ensureSearchTab(existingTabId, settings = null) {
-  let tab = null;
-
-  if (existingTabId) {
-    try {
-      tab = await chrome.tabs.get(existingTabId);
-    } catch (_) {
-      // Tab was closed; create new one
-    }
-  }
-
-  if (!tab) {
-    tab = await chrome.tabs.create({
-      url: 'https://www.google.com',
-      active: true
-    });
-  }
-
-  return tab;
-}
-
-/**
  * Navigates the given tab to the search URL and waits for page load to complete.
  * @param {number} tabId 
  * @param {string} searchUrl 
@@ -1229,7 +1212,14 @@ function createKeywordErrorResult(item, message) {
 }
 
 async function checkKeywordRanks(item, tabId, settings, runId) {
-  const domain = settings.googleDomain || 'google.com';
+  // Restrict keyword requests to the exact allowlisted Google Search host.
+  const domain = supportedGoogleDomain(settings?.googleDomain || 'google.com');
+  if (!domain) {
+    return {
+      resultItem: createKeywordErrorResult(item, 'Unsupported Google Search country domain.'),
+      interrupted: false
+    };
+  }
   const maxDepth = Math.max(10, Math.min(100, Number(settings.maxPosition) || 50));
   const normTarget = normalizeUrl(item.targetUrl);
 
@@ -1601,7 +1591,11 @@ async function runQueueLoop(runId) {
     // Ensure visible search tab exists using jobSettings
     let tab;
     try {
-      tab = await ensureSearchTab(state.searchTabId, jobSettings);
+      tab = await getSafeRankSearchTab({
+        existingTabId: state.searchTabId,
+        googleDomain: jobSettings.googleDomain || 'google.com',
+        tabs: chrome.tabs
+      });
       if (tab.id !== state.searchTabId) {
         await saveJobState({ searchTabId: tab.id });
       }
@@ -1889,6 +1883,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Merge project config with explicit job request settings
         const reqSettings = settings || {};
         const rawDomain = reqSettings.googleDomain || projectConfig?.googleDomain || 'google.com';
+        const validatedDomain = supportedGoogleDomain(rawDomain);
+        if (!validatedDomain) {
+          sendResponse({
+            success: false,
+            error: 'Unsupported Google Search country domain.',
+            message: 'Select a supported Google Search country domain before starting.'
+          });
+          return;
+        }
         const rawDelay = Math.max(5, parseInt(reqSettings.delaySeconds ?? projectConfig?.defaultDelaySeconds ?? 8, 10) || 8);
         const rawMaxDepth = Math.max(10, parseInt(reqSettings.maxPosition ?? projectConfig?.defaultMaxDepth ?? 50, 10) || 50);
         const useLocation = Boolean(reqSettings.useLocation !== undefined ? reqSettings.useLocation : projectConfig?.useLocation);
@@ -1936,7 +1939,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         // 3. Create complete immutable snapshot of active job settings
         const activeJobSettings = {
-          googleDomain: rawDomain,
+          googleDomain: validatedDomain,
           delaySeconds: rawDelay,
           maxPosition: rawMaxDepth,
           debugMode: Boolean(reqSettings.debugMode),
@@ -2119,8 +2122,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         const state = await getJobState();
         const prefs = await getPreferences();
-        const domain = (state.jobSettings && state.jobSettings.googleDomain) ||
-          prefs.googleDomain || 'google.com';
+        const requestedDomain = request.googleDomain ||
+          state.jobSettings?.googleDomain || prefs.googleDomain || 'google.com';
+        const domain = supportedGoogleDomain(requestedDomain);
+        if (!domain) {
+          sendResponse({ success: false, error: 'Unsupported Google Search country domain.' });
+          return;
+        }
         const result = await activateVisibleGoogleLocation({
           latitude: validation.latitude,
           longitude: validation.longitude,
@@ -2147,8 +2155,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         const state = await getJobState();
         const prefs = await getPreferences();
-        const domain = (state.jobSettings && state.jobSettings.googleDomain) ||
-          prefs.googleDomain || 'google.com';
+        const requestedDomain = request.googleDomain ||
+          state.jobSettings?.googleDomain || prefs.googleDomain || 'google.com';
+        const domain = supportedGoogleDomain(requestedDomain);
+        if (!domain) {
+          sendResponse({ success: false, error: 'Unsupported Google Search country domain.' });
+          return;
+        }
         const result = await activateVisibleGoogleLocation(validation, domain, state);
         sendResponse(result);
         return;

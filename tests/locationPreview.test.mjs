@@ -84,3 +84,16 @@ test('failed navigation closes only the newly-created blank tab', async () => {
   );
   assert.deepEqual(closed, [99]);
 });
+
+
+test('only exact Google Search paths qualify for applying client geolocation', () => {
+  const allowed = ['google.com', 'google.co.in', 'google.com.br'];
+  for (const domain of allowed) {
+    const origin = 'https://www.' + domain;
+    assert.equal(isGoogleLocationTab({ id: 11, url: origin + '/search?q=dentist' }, domain), true);
+    for (const path of ['/', '/maps', '/finance', '/searching?q=dentist', '/search/other']) {
+      assert.equal(isGoogleLocationTab({ id: 11, url: origin + path }, domain), false,
+        domain + path + ' must not receive Search location debugger');
+    }
+  }
+});

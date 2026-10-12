@@ -38,7 +38,8 @@ import {
 } from '../utils/projectManager.js';
 
 import { validateCoordinates } from '../utils/locationValidator.js';
-import { getRememberedCoordinates, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
+import { canPromoteBaseline } from '../utils/baselinePromotion.js';
+import { getRememberedCoordinates, getRememberedCoordinateDraft, rememberCoordinateDraft, getLocationForProject, rememberCoordinates, forgetRememberedCoordinates } from '../utils/rememberedLocation.js';
 import {
   LOCATION_STATES,
   isSessionStorageAvailable,
@@ -175,6 +176,7 @@ const el = {
   defaultTargetSite: document.getElementById('default-target-site'),
   workbookFile: document.getElementById('workbook-file'),
   workbookDate: document.getElementById('workbook-date'),
+  workbookDateOrder: document.getElementById('workbook-date-order'),
   workbookStatus: document.getElementById('workbook-import-status'),
   workbookSheet: document.getElementById('workbook-sheet'),
   workbookHeaderRow: document.getElementById('workbook-header-row'),
@@ -315,7 +317,10 @@ async function loadActiveProjectIntoUI(proj) {
   el.progProjectName.textContent = `Project: ${cfg.projectName || 'Default Client'}`;
 
   // Geolocation simulation per project
-  const saved = getLocationForProject(cfg, await getRememberedCoordinates());
+  const [remembered, draft] = await Promise.all([
+    getRememberedCoordinates(), getRememberedCoordinateDraft()
+  ]);
+  const saved = getLocationForProject(cfg, remembered, draft);
   el.useLocationToggle.checked = Boolean(cfg.useLocation && saved.source === 'project');
   el.locName.value = cfg.locationName || '';
   el.locLat.value = saved.latitude;
@@ -525,7 +530,7 @@ function updateLocationStatusBadge(state, details = null, tabId = null) {
 
   if (state === LOCATION_STATES.ACTIVE || state === 'ACTIVE') {
     el.locationStatusBadge.classList.add('badge-active');
-    el.locationStatusBadge.textContent = tabId ? `LOCATION: ACTIVE (Tab ${tabId})` : 'LOCATION: ACTIVE';
+    el.locationStatusBadge.textContent = tabId ? `DEVICE GEO VERIFIED (Tab ${tabId})` : 'DEVICE GEO VERIFIED';
     el.locationMsg.textContent = details
       ? `Browser device coordinates: ${details.latitude}, ${details.longitude} (±${details.accuracy || 20}m). Google may still show an IP-based location.`
       : 'Browser location override is active only in the Google search tab.';
@@ -650,7 +655,11 @@ function renderJobState(state) {
     const offsetStr = state.currentSerpOffset ? ` (page offset start=${state.currentSerpOffset})` : '';
     el.progActivity.textContent = `Checking: "${state.currentKeyword}"${offsetStr}...`;
   } else if (status === 'COMPLETED') {
-    el.progActivity.textContent = 'Batch completed successfully.';
+    const failures = (state.results || []).filter(r => r &&
+      (r.status === 'ERROR' || r.matchStatus === 'ERROR')).length;
+    el.progActivity.textContent = failures
+      ? `Batch finished with ${failures} failed keyword check(s). Review errors or use Retry Failed.`
+      : 'Batch completed successfully.';
   } else if (status === 'PAUSED') {
     el.progActivity.textContent = 'Paused. Click RESUME to continue.';
   } else if (status === 'BLOCKED') {
@@ -691,7 +700,7 @@ function renderJobState(state) {
   el.btnCopyPositions.disabled = !hasResultsForProject;
   el.btnCopyAll.disabled = !hasResultsForProject;
   el.btnDownloadCsv.disabled = !hasResultsForProject;
-  el.btnUseAsPrevious.disabled = !hasResultsForProject;
+  el.btnUseAsPrevious.disabled = !canPromoteBaseline(state, activeProject);
   el.btnRetryFailed.disabled = !hasResultsForProject || errors === 0;
 
   // Render results table with project ID isolation
@@ -1203,26 +1212,30 @@ function setupEventListeners() {
   el.btnCloseConfirmModal.addEventListener('click', closeConfirmModal);
 
   async function persistEditedLocation() {
-    if (!activeProject) return;
-    const validation = validateCoordinates(el.locLat.value, el.locLon.value, el.locAcc.value);
-    if (!validation.valid) return;
+    const project = activeProject;
+    const latitude = el.locLat.value.trim();
+    const longitude = el.locLon.value.trim();
+    const accuracy = el.locAcc.value.trim() || '20';
+    const config = {
+      latitude, longitude, accuracy,
+      locationName: el.locName.value.trim(),
+      locationDraftEdited: true
+    };
+    if (project) Object.assign(project.config || project, config);
     try {
-      const saved = await rememberCoordinates(validation);
-      if (!saved.saved) throw new Error(saved.error);
-      const config = {
-        latitude: String(validation.latitude),
-        longitude: String(validation.longitude),
-        accuracy: validation.accuracy,
-        locationName: el.locName.value.trim()
-      };
-      await updateProject(activeProject.id, config);
-      Object.assign(activeProject.config || activeProject, config);
+      const draftSaved = await rememberCoordinateDraft({ latitude, longitude, accuracy });
+      if (!draftSaved.saved) return;
+      if (project) await updateProject(project.id, config);
+      const validation = validateCoordinates(latitude, longitude, accuracy);
+      if (validation.valid) await rememberCoordinates(validation);
     } catch (error) {
       showToast('Could not remember location: ' + error.message, 'error');
     }
   }
 
   for (const field of [el.locLat, el.locLon, el.locAcc, el.locName]) {
+    // Save before blur, including incomplete coordinate pairs.
+    field.addEventListener('input', persistEditedLocation);
     field.addEventListener('change', persistEditedLocation);
   }
 
@@ -1266,6 +1279,7 @@ function setupEventListeners() {
 
       const resp = await chrome.runtime.sendMessage({
         action: 'APPLY_LOCATION',
+        googleDomain: el.googleDomain.value,
         location: {
           latitude: validation.latitude,
           longitude: validation.longitude,
@@ -1299,6 +1313,7 @@ function setupEventListeners() {
     try {
       const resp = await chrome.runtime.sendMessage({
         action: 'TEST_LOCATION',
+        googleDomain: el.googleDomain.value,
         location: {
           latitude: validation.latitude,
           longitude: validation.longitude,
@@ -1355,7 +1370,10 @@ function setupEventListeners() {
   async function useWorkbookMapping(options = {}) {
     if (!pendingWorkbookUpload) throw new Error('Select a workbook first.');
     const { bytes, filename } = pendingWorkbookUpload;
-    const inspected = await inspectRankingWorkbook(bytes, options);
+    const inspected = await inspectRankingWorkbook(bytes, {
+      ...options,
+      dateOrder: el.workbookDateOrder.value
+    });
     importedWorkbook = {
       bytes, inspected, filename,
       projectId: activeProject ? activeProject.id : null,
@@ -1667,7 +1685,7 @@ function setupEventListeners() {
   });
 
   // Bug 4 Fix: Enforce results are bound to active project ID before copying/exporting
-  el.btnCopyPositions.addEventListener('click', () => {
+  el.btnCopyPositions.addEventListener('click', async () => {
     if (!currentJobState || !currentJobState.results || currentJobState.results.length === 0) {
       showToast('No results to copy.', 'error');
       return;
@@ -1677,11 +1695,13 @@ function setupEventListeners() {
       return;
     }
     const tsvData = exportToCurrentPositionsOnly(currentJobState.results);
-    copyToClipboard(tsvData);
-    showToast(`Copied ${currentJobState.results.length} positions to clipboard! Ready to paste into Excel.`, 'success');
+    const copied = await copyToClipboard(tsvData);
+    showToast(copied
+      ? `Copied ${currentJobState.results.length} positions to clipboard! Ready to paste into Excel.`
+      : 'Could not copy positions. Check clipboard permissions and try again.', copied ? 'success' : 'error');
   });
 
-  el.btnCopyAll.addEventListener('click', () => {
+  el.btnCopyAll.addEventListener('click', async () => {
     if (!currentJobState || !currentJobState.results || currentJobState.results.length === 0) {
       showToast('No results to copy.', 'error');
       return;
@@ -1691,8 +1711,9 @@ function setupEventListeners() {
       return;
     }
     const tsvData = exportToTsv(currentJobState.results);
-    copyToClipboard(tsvData);
-    showToast('Copied full results table as TSV.', 'success');
+    const copied = await copyToClipboard(tsvData);
+    showToast(copied ? 'Copied full results table as TSV.'
+      : 'Could not copy results. Check clipboard permissions and try again.', copied ? 'success' : 'error');
   });
 
   el.btnDownloadCsv.addEventListener('click', () => {
@@ -1736,25 +1757,32 @@ function setupEventListeners() {
     }
   });
 
-  // Use Current as Previous (Baseline promotion) (Bug 4 Fix)
+  // Baselines only update from a completed job for the current client.
   el.btnUseAsPrevious.addEventListener('click', () => {
-    if (!activeProject) return;
-    if (!currentJobState || !currentJobState.results || currentJobState.results.length === 0) {
-      showToast('No current results available to set as previous.', 'error');
-      return;
-    }
-    if (currentJobState.projectId && activeProject && currentJobState.projectId !== activeProject.id) {
-      showToast('Action disabled: results belong to a different project.', 'error');
+    if (!canPromoteBaseline(currentJobState, activeProject)) {
+      showToast('Complete the current rank check before updating the baseline.', 'error');
       return;
     }
 
+    const selectedProjectId = activeProject.id;
+    const selectedRunId = currentJobState.runId;
     const projName = activeProject.config?.projectName || 'Current Project';
     openConfirmModal(
       'Use Current as Previous Baseline',
       `Promote current ranking results as the new baseline previous positions for "${projName}"? Future checks will compare against these positions.`,
       async () => {
         try {
-          const updated = await promoteCurrentToPrevious(activeProject.id, currentJobState.results);
+          // The user may have started another check while the dialog was open.
+          // Recheck the authoritative worker state before changing history.
+          const response = await chrome.runtime.sendMessage({ action: 'GET_STATE' });
+          const latestState = response?.state;
+          if (activeProject?.id !== selectedProjectId ||
+              !canPromoteBaseline(latestState, activeProject, selectedRunId)) {
+            showToast('The rank-check run has changed or is incomplete. Baseline not updated.', 'error');
+            await syncBackgroundState();
+            return;
+          }
+          const updated = await promoteCurrentToPrevious(selectedProjectId, latestState.results);
           activeProject.keywords = updated;
           renderKeywordsTextarea(updated);
           showToast(`Baseline updated for ${updated.length} keywords!`, 'success');

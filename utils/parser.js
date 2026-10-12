@@ -105,9 +105,13 @@ export function normalizePreviousPosition(val) {
     return '>100';
   }
 
-  const num = parseInt(str, 10);
-  if (!isNaN(num) && num > 0) {
-    return num;
+  // parseInt('12.5'), parseInt('12abc'), and parseInt('1e3') all
+  // return misleading exact ranks. Accept only entire, safe, positive
+  // integers; preserve other values as non-numeric labels so they cannot
+  // produce fabricated ranking deltas.
+  if (/^\d+$/.test(str)) {
+    const num = Number(str);
+    if (Number.isSafeInteger(num) && num > 0) return num;
   }
 
   return str;
@@ -307,6 +311,40 @@ function splitPasteCells(line, delimiter) {
   values.push(value.trim());
   return values;
 }
+/**
+ * Split pasted CSV/TSV into logical records, not physical lines. Excel CSV
+ * fields can contain quoted newlines; splitting those creates false keywords.
+ * Keep the starting physical line so preview errors retain accurate locations.
+ */
+function splitPasteRecords(text) {
+  const records = [];
+  let recordStart = 0, startLine = 1, physicalLine = 1, quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      if (quoted && text[i + 1] === '"') i++; // Escaped quote.
+      else quoted = !quoted;
+    } else if (char === '\r' || char === '\n') {
+      const crlf = char === '\r' && text[i + 1] === '\n';
+      if (!quoted) {
+        records.push({ raw: text.slice(recordStart, i), line: startLine });
+        recordStart = i + (crlf ? 2 : 1);
+        startLine = physicalLine + 1;
+      }
+      physicalLine++;
+      if (crlf) i++;
+    }
+  }
+  if (quoted) {
+    return {
+      records,
+      error: { line: startLine, raw: text.slice(recordStart),
+        message: 'Unterminated quoted field in pasted CSV/TSV.' }
+    };
+  }
+  records.push({ raw: text.slice(recordStart), line: startLine });
+  return { records, error: null };
+}
 function pasteDelimiter(line) {
   if (line.includes('\t')) return '\t';
   if (line.includes('|')) return '|';
@@ -392,7 +430,7 @@ function parsePasteRow(line, delimiter, mapping, defaultUrl) {
  */
 export function parseInputRows(text, options = {}) {
   if (!text || typeof text !== 'string') return { valid: [], errors: [] };
-  const lines = text.split(/\r?\n/);
+  const { records, error: recordError } = splitPasteRecords(text);
   const valid = [], errors = [];
   const defaultUrl = String(options?.defaultTargetUrl || '').trim();
   if (defaultUrl && !isValidUrlOrDomain(defaultUrl)) {
@@ -400,10 +438,9 @@ export function parseInputRows(text, options = {}) {
   }
 
   let mapping = null, delimiter = null, started = false;
-  lines.forEach((rawLine, index) => {
+  records.forEach(({ raw: rawLine, line: lineNum }) => {
     const line = rawLine.trim();
     if (!line) return;
-    const lineNum = index + 1;
     if (!started) {
       started = true;
       delimiter = pasteDelimiter(rawLine);
@@ -432,6 +469,7 @@ export function parseInputRows(text, options = {}) {
       previousPosition: parsed.previousPosition
     });
   });
+  if (recordError) errors.push(recordError);
   return { valid, errors };
 }
 

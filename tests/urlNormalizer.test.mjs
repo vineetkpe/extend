@@ -106,3 +106,68 @@ test('different domains are not considered matches', () => {
     { match: false, isSameDomain: false, type: MATCH_TYPES.NOT_FOUND }
   );
 });
+
+
+test('Google redirect wrappers resolve across every supported country domain', () => {
+  const domains = [
+    'google.com', 'google.co.uk', 'google.ca', 'google.com.au',
+    'google.co.in', 'google.de', 'google.fr', 'google.es',
+    'google.it', 'google.co.nz', 'google.ie', 'google.com.sg',
+    'google.com.mx', 'google.com.br'
+  ];
+  const target = 'https://example.com/Landing?item=42';
+  for (const domain of domains) {
+    for (const parameter of ['q', 'url']) {
+      const redirect = 'https://www.' + domain + '/url?' +
+        parameter + '=' + encodeURIComponent(target);
+      assert.equal(cleanGoogleRedirect(redirect), target, domain + ' ' + parameter);
+      assert.equal(normalizeUrl(redirect), normalizeUrl(target), domain);
+      assert.equal(extractDomain(redirect), 'example.com', domain);
+      assert.equal(matchUrl(target, redirect).type, MATCH_TYPES.EXACT_PAGE, domain);
+    }
+  }
+});
+
+test('newly supported Google redirect domains still fail closed for unsafe destinations', () => {
+  for (const domain of ['google.es', 'google.it', 'google.com.sg', 'google.com.br']) {
+    const unsafe = 'https://www.' + domain + '/url?q=' +
+      encodeURIComponent('javascript:alert(1)');
+    assert.equal(cleanGoogleRedirect(unsafe), '', domain);
+    assert.equal(normalizeUrl(unsafe), '', domain);
+  }
+});
+
+test('Google-looking attacker hosts are not mistaken for trusted redirect origins', () => {
+  const target = 'https://example.com/Landing';
+  for (const host of ['www.google.es.attacker.example', 'attacker-google.es',
+                      'search.google.es', 'www.google.com.br.attacker.example']) {
+    const wrapper = 'https://' + host + '/url?q=' + encodeURIComponent(target);
+    assert.equal(cleanGoogleRedirect(wrapper), wrapper, host);
+    assert.notEqual(normalizeUrl(wrapper), normalizeUrl(target), host);
+    assert.equal(matchUrl(target, wrapper).match, false, host);
+  }
+});
+
+
+test('ref and source values remain part of exact landing-page identity', () => {
+  for (const key of ['ref', 'source']) {
+    const a = 'https://example.com/product?' + key + '=offer-a';
+    const b = 'https://example.com/product?' + key + '=offer-b';
+    assert.equal(normalizeUrl(a), 'example.com/product?' + key + '=offer-a');
+    assert.notEqual(normalizeUrl(a), normalizeUrl(b));
+    assert.deepEqual(matchUrl(a, b), {
+      match: false, isSameDomain: true, type: MATCH_TYPES.OTHER_DOMAIN_PAGE
+    });
+  }
+});
+
+test('source and ref parameters survive when legitimate tracking parameters are removed', () => {
+  const tracked = 'https://www.example.com/page?source=blue&ref=sku-1&utm_source=email&gclid=abc';
+  const clean = 'https://example.com/page?ref=sku-1&source=blue';
+  assert.equal(normalizeUrl(tracked), normalizeUrl(clean));
+  assert.equal(matchUrl(tracked, clean).type, MATCH_TYPES.EXACT_PAGE);
+  assert.notEqual(
+    normalizeUrl('https://example.com/page?ref=sku-1'),
+    normalizeUrl('https://example.com/page?ref=sku-2')
+  );
+});

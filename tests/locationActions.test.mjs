@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { STORAGE_KEYS } from '../utils/storage.js';
 
-function makeMockBrowser({ denied = false } = {}) {
+function makeMockBrowser({ denied = false, mismatchedDeviceLocation = false } = {}) {
   const stored = {};
   const tabsById = new Map();
   const listeners = new Set();
@@ -41,7 +41,8 @@ function makeMockBrowser({ denied = false } = {}) {
           };
         }
         if (method === 'Runtime.evaluate') {
-          cb({ result: { value: denied ? { error: 'User denied Geolocation' } : reported } });
+          cb({ result: { value: denied ? { error: 'User denied Geolocation' } :
+            mismatchedDeviceLocation ? { latitude: 0, longitude: 0 } : reported } });
           return;
         }
         if (method === 'Emulation.clearGeolocationOverride') reported = null;
@@ -68,6 +69,7 @@ function makeMockBrowser({ denied = false } = {}) {
         if (!tab) throw new Error('Tab missing');
         Object.assign(tab, changes);
         if (changes.url) {
+          commands.push(['navigate', id, changes.url]);
           queueMicrotask(() => {
             for (const cb of listeners) cb(id, { status: 'complete' }, tab);
           });
@@ -145,4 +147,100 @@ test('APPLY_LOCATION verifies in visible Google tab, rather than claiming pendin
   assert.equal(result.verified, true);
   assert.equal(browser.tabsById.size, 1);
   assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationApplied, true);
+});
+
+
+test('large accuracy remains correct in applied session fingerprint', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('location-accuracy-150-priority');
+  const result = await browser.send({
+    action: 'APPLY_LOCATION',
+    location: { latitude: 28.6139, longitude: 77.209, accuracy: 150 }
+  });
+  assert.equal(result.success, true);
+  const job = browser.stored[STORAGE_KEYS.JOB_STATE];
+  assert.deepEqual(job.appliedLocation, {
+    tabId: 50, latitude: 28.6139, longitude: 77.209, accuracy: 150
+  });
+  assert.equal(job.locationApplied, true);
+});
+
+test('location Test fails closed if Google page reports different device coordinates', async () => {
+  const browser = makeMockBrowser({ mismatchedDeviceLocation: true });
+  await browser.startWorker('location-device-gps-mismatch-priority');
+  const result = await browser.send({
+    action: 'TEST_LOCATION',
+    location: { latitude: 28.6139, longitude: 77.209, accuracy: 20 }
+  });
+  assert.equal(result.success, false);
+  assert.match(result.error, /did not report the configured coordinates/i);
+  assert.ok(!browser.stored[STORAGE_KEYS.JOB_STATE].locationApplied);
+  assert.ok(browser.commands.some(row => row[0] === 'Emulation.clearGeolocationOverride'));
+});
+
+
+test('Apply reloads Google search after GPS override and verifies the reloaded document', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('client-location-reload-order');
+  const result = await browser.send({
+    action: 'APPLY_LOCATION',
+    googleDomain: 'google.co.in',
+    location: { latitude: 28.6139, longitude: 77.209, accuracy: 30 }
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.verified, true);
+  assert.deepEqual(result.reported, {
+    latitude: 28.6139, longitude: 77.209, accuracy: 30
+  });
+  const actions = browser.commands.map(entry => entry[0]);
+  const overrideIndex = actions.indexOf('Emulation.setGeolocationOverride');
+  const lastNavigation = actions.lastIndexOf('navigate');
+  const evaluationIndex = actions.indexOf('Runtime.evaluate');
+  assert.ok(overrideIndex >= 0, 'GPS override must be sent');
+  assert.ok(lastNavigation > overrideIndex,
+    'Google Search must reload AFTER setting the client coordinates');
+  assert.ok(evaluationIndex > lastNavigation,
+    'The reloaded Google page must report the configured coordinates');
+  assert.match(browser.tabsById.get(result.tabId).url, /^https:\/\/www\.google\.co\.in\/search\?/);
+});
+
+test('Test also reloads an existing Google tab with newly entered client coordinates', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('client-location-existing-tab');
+  const first = await browser.send({
+    action: 'TEST_LOCATION',
+    googleDomain: 'google.com.br',
+    location: { latitude: -23.5505, longitude: -46.6333, accuracy: 20 }
+  });
+  assert.equal(first.success, true);
+  const initialCommandCount = browser.commands.length;
+  const second = await browser.send({
+    action: 'APPLY_LOCATION',
+    googleDomain: 'google.com.br',
+    location: { latitude: -22.9068, longitude: -43.1729, accuracy: 100 }
+  });
+  assert.equal(second.success, true);
+  assert.equal(second.tabId, first.tabId);
+  assert.equal(second.reported.latitude, -22.9068);
+  assert.equal(second.reported.longitude, -43.1729);
+  const operations = browser.commands.slice(initialCommandCount);
+  const override = operations.findIndex(entry => entry[0] === 'Emulation.setGeolocationOverride');
+  const reload = operations.findIndex(entry => entry[0] === 'navigate');
+  const verify = operations.findIndex(entry => entry[0] === 'Runtime.evaluate');
+  assert.ok(override >= 0 && reload > override && verify > reload);
+  assert.match(browser.tabsById.get(first.tabId).url, /^https:\/\/www\.google\.com\.br\/search\?/);
+});
+
+test('invalid Google domain cannot be used for location debugger', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('client-location-reject-untrusted-domain');
+  const result = await browser.send({
+    action: 'APPLY_LOCATION',
+    googleDomain: 'google.com.attacker.example',
+    location: { latitude: 28.6139, longitude: 77.209, accuracy: 20 }
+  });
+  assert.equal(result.success, false);
+  assert.match(result.error, /unsupported Google Search country domain/i);
+  assert.equal(browser.tabsById.size, 0);
+  assert.equal(browser.commands.some(entry => entry[0] === 'attach'), false);
 });

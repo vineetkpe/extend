@@ -293,6 +293,11 @@
               <input id="workbook-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
               <label class="workbook-file-label" for="workbook-date">New ranking date</label>
               <input id="workbook-date" type="date">
+              <label class="workbook-file-label" for="workbook-date-order">Text date headers</label>
+              <select id="workbook-date-order" aria-label="Date order for text-formatted workbook headers">
+                <option value="MDY">MM/DD/YYYY</option>
+                <option value="DMY">DD/MM/YYYY</option>
+              </select>
               <button id="btn-clear-workbook" class="btn btn-secondary btn-sm" type="button" disabled>Return to Manual Input</button>
             </div>
             <div class="workbook-import-controls" style="margin-top: 10px">
@@ -324,9 +329,15 @@
             <label class="workbook-file-label" for="default-target-site">Default website for keyword-only lists</label>
             <input id="default-target-site" type="text" placeholder="example.com or https://example.com/" autocomplete="off">
           </div>
-          <p class="format-hint" style="margin-bottom:10px">Paste any table with headers such as <code>Keyword</code>, <code>Website</code> and <code>Previous Rank</code>, in any order. Extra columns are ignored. Or paste one keyword per line and supply a default website above.</p>
+          <p class="format-hint" style="margin-bottom:10px">Paste three columns from Excel in the order below. CSV files with a header can use any column order; extra columns are ignored. For keyword-only lists, enter the default website above.</p>
+          <div id="dashboardKeywordColumnGuide" role="group" aria-label="Keyword input columns" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:8px;font-size:13px;font-weight:600;">
+            <span>Column 1: Keyword / search phrase</span>
+            <span>Column 2: Target website / landing page URL</span>
+            <span>Column 3: Previous organic rank (optional)</span>
+          </div>
+          <label class="format-hint" for="keywords-textarea">Keyword data — enter or paste rows</label>
           <div class="textarea-wrapper">
-            <textarea id="keywords-textarea" rows="18" placeholder="Paste from Excel or enter:&#10;prompt optimizer   getpromptoptimizer.com   89&#10;best local seo   example.com/seo   12&#10;emergency dentist   example.com/urgent   -"></textarea>
+            <textarea id="keywords-textarea" aria-describedby="dashboardKeywordColumnGuide" rows="18" placeholder="Keyword&#9;Target Website URL&#9;Previous Rank&#10;best local seo&#9;https://example.com/seo&#9;12&#10;emergency dentist&#9;https://example.com/urgent&#9;-"></textarea>
           </div>
           <div class="keywords-footer">
             <span id="keyword-count-label">0 keywords detected</span>
@@ -391,6 +402,15 @@
               <option value="google.ca">google.ca (Canada)</option>
               <option value="google.com.au">google.com.au (Australia)</option>
               <option value="google.co.in">google.co.in (India)</option>
+              <option value="google.de">google.de (Germany)</option>
+              <option value="google.fr">google.fr (France)</option>
+              <option value="google.es">google.es (Spain)</option>
+              <option value="google.it">google.it (Italy)</option>
+              <option value="google.co.nz">google.co.nz (New Zealand)</option>
+              <option value="google.ie">google.ie (Ireland)</option>
+              <option value="google.com.sg">google.com.sg (Singapore)</option>
+              <option value="google.com.mx">google.com.mx (Mexico)</option>
+              <option value="google.com.br">google.com.br (Brazil)</option>
             </select>
           </div>
           <div class="form-row">
