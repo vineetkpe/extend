@@ -1273,6 +1273,7 @@ function setupEventListeners() {
 
       const resp = await chrome.runtime.sendMessage({
         action: 'APPLY_LOCATION',
+        googleDomain: el.googleDomain.value,
         location: {
           latitude: validation.latitude,
           longitude: validation.longitude,
@@ -1306,6 +1307,7 @@ function setupEventListeners() {
     try {
       const resp = await chrome.runtime.sendMessage({
         action: 'TEST_LOCATION',
+        googleDomain: el.googleDomain.value,
         location: {
           latitude: validation.latitude,
           longitude: validation.longitude,
