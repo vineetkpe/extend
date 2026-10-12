@@ -330,3 +330,43 @@ test('blank client latitude or longitude does not silently become 0,0', async ()
   assert.equal(inspected.location.latitude, '');
   assert.equal(inspected.location.longitude, '');
 });
+
+
+test('XLSX export never promotes stale or unverified ranking data', async () => {
+  const { bytes, inspected } = await fixture();
+  const cases = [
+    [{ status: 'NOT CHECKED', currentPosition: 4 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', matchStatus: 'NOT_CHECKED', currentPosition: 4 }, 'NOT CHECKED'],
+    [{ status: 'ERROR', currentPosition: 4 }, 'ERROR'],
+    [{ matchStatus: 'ERROR', currentPosition: 'Not Found' }, 'ERROR'],
+    [{ currentPosition: 'Not Found' }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', currentPosition: 0 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', currentPosition: 1.5 }, 'NOT CHECKED'],
+    [{ status: 'TARGET PAGE NOT FOUND', currentPosition: 8 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', matchStatus: 'TARGET PAGE NOT FOUND', currentPosition: 8 }, 'NOT CHECKED'],
+    [{ status: 'EXACT PAGE', matchStatus: 'TARGET PAGE NOT FOUND', currentPosition: 'Not Found' }, 'NOT CHECKED']
+  ];
+  for (const [details, expected] of cases) {
+    const result = { id: 'workbook_row_10', ...details };
+    const blob = await buildUpdatedRankingWorkbook(bytes, inspected, [result], '2026-10-08');
+    const zip = new WorkbookZip(await blob.arrayBuffer());
+    const doc = new DOMParser().parseFromString(
+      td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+    assert.equal(cellValue(c(doc, 'G10')), expected, JSON.stringify(details));
+    // A different keyword's historic rank must stay untouched.
+    assert.equal(cellValue(c(doc, 'H11')), '5');
+  }
+});
+
+test('XLSX export continues to record verified rankings and verified absences', async () => {
+  const { bytes, inspected } = await fixture();
+  const blob = await buildUpdatedRankingWorkbook(bytes, inspected, [
+    { id: 'workbook_row_10', currentPosition: 7, matchStatus: 'EXACT PAGE' },
+    { id: 'workbook_row_11', currentPosition: 'Not Found', matchStatus: 'OTHER DOMAIN PAGE FOUND' }
+  ], '2026-10-08');
+  const zip = new WorkbookZip(await blob.arrayBuffer());
+  const doc = new DOMParser().parseFromString(
+    td.decode(await zip.read('xl/worksheets/sheet2.xml')), 'text/xml');
+  assert.equal(cellValue(c(doc, 'G10')), '7');
+  assert.equal(cellValue(c(doc, 'G11')), 'NA');
+});
