@@ -384,3 +384,34 @@ test('Reset Location is not mistaken for unexpected debugger loss', async () => 
   assert.equal(browser.stored[STORAGE_KEYS.JOB_STATE].locationState, 'NOT CONFIGURED');
   assert.deepEqual(browser.getLocationRules(), []);
 });
+
+
+test('new Apply Location tab makes NO Google Search request before client GPS + X-Geo', async () => {
+  const browser = makeMockBrowser();
+  await browser.startWorker('first-search-is-client-localized');
+  const applied = await browser.send({
+    action: 'APPLY_LOCATION', googleDomain: 'google.com',
+    location: { latitude: 39.7946857, longitude: -105.0654264, accuracy: 20 }
+  });
+  assert.equal(applied.success, true);
+  assert.equal(applied.tabId, 50);
+  const navigations = browser.commands.filter(row => row[0] === 'navigate');
+  assert.equal(navigations.length, 1,
+    'Do not issue an unlocalized SERPTrack device location test request first.');
+  const first = navigations[0][2];
+  assert.match(first, /^https:\/\/www\.google\.com\/search\?/);
+  assert.match(first, /[?&]uule=a\+/);
+  assert.equal(new URL(first).searchParams.get('pws'), '0');
+  assert.match(atob(new URL(first).searchParams.get('uule').slice(2)),
+    /latitude_e7:397946857/);
+  assert.match(atob(new URL(first).searchParams.get('uule').slice(2)),
+    /longitude_e7:-1050654264/);
+  const actionNames = browser.commands.map(row => row[0]);
+  const firstSearch = actionNames.indexOf('navigate');
+  assert.ok(actionNames.indexOf('xgeoRules') < firstSearch,
+    'Set Google client location request header BEFORE first Search navigation.');
+  assert.ok(actionNames.indexOf('Emulation.setGeolocationOverride') < firstSearch,
+    'Set browser GPS BEFORE first Search navigation.');
+  assert.ok(actionNames.indexOf('Runtime.evaluate') > firstSearch,
+    'Verify the new document after loading Google Search.');
+});
