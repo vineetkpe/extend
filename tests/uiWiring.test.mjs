@@ -95,3 +95,25 @@ test('popup and dashboard describe exactly which three keyword columns to paste'
   assert.match(popup, /aria-describedby="keywordColumnGuide"/);
   assert.match(dashboard, /aria-describedby="dashboardKeywordColumnGuide"/);
 });
+
+
+test('successful Apply Location enables client-coordinate ranking in both screens', () => {
+  const popup = read('popup/popup.js');
+  const dashboard = read('dashboard/dashboard.js');
+  const popupApply = popup.slice(popup.indexOf("bindButton('btnApplyLocation'"),
+    popup.indexOf("bindButton('btnTestLocation'"));
+  const dashApply = dashboard.slice(dashboard.indexOf("el.btnApplyLocation.addEventListener"),
+    dashboard.indexOf("el.btnTestLocation.addEventListener"));
+  assert.match(popupApply, /if \(resp && resp\.success\) \{[\s\S]*useLocationCheckbox\.checked = true/);
+  assert.match(dashApply, /if \(resp && resp\.success\) \{[\s\S]*el\.useLocationToggle\.checked = true/);
+  assert.match(popup, /useLocation: useLocationCheckbox \? useLocationCheckbox\.checked : false/);
+  assert.match(dashboard, /useLocation: el\.useLocationToggle\.checked/);
+  assert.match(read('dashboard/dashboard.html'),
+    /Use Client Coordinates for Google Ranking Checks/);
+});
+
+test('client-location search URL is used on both preview and ranking pagination', () => {
+  const worker = read('background.js');
+  assert.match(worker, /withClientSearchLocation\(currentTab\.url, domain, location\)/);
+  assert.match(worker, /const searchUrl = settings\?\.useLocation\s*\?\s*withClientSearchLocation\(baseSearchUrl, domain, settings\)\s*:\s*baseSearchUrl/);
+});

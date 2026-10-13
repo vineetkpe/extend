@@ -38,7 +38,7 @@ import { verifyCoordinatesReported, DEVICE_LOCATION_EXPRESSION } from './utils/g
 import { getVisibleGoogleLocationTab, isGoogleLocationTab, supportedGoogleDomain } from './utils/locationPreview.js';
 import { getSafeRankSearchTab } from './utils/rankSearchTab.js';
 import {
-  applyScopedSearchLocation, clearScopedSearchLocation
+  applyScopedSearchLocation, clearScopedSearchLocation, withClientSearchLocation
 } from './utils/googleSearchLocationSignal.js';
 import { reconcileWorkerRestart } from './utils/jobRecovery.js';
 
@@ -201,7 +201,10 @@ async function activateVisibleGoogleLocation(location, domain, state) {
     if (!isGoogleLocationTab(currentTab, domain)) {
       throw new Error('Google tab left the expected Search results page.');
     }
-    await navigateAndWaitForTab(tabId, currentTab.url);
+    // Send location with the Google Search URL too, rather than relying on
+    // GPS alone (or a stale UULE cookie from the user's original location).
+    const localizedUrl = withClientSearchLocation(currentTab.url, domain, location);
+    await navigateAndWaitForTab(tabId, localizedUrl);
     const check = await verifyPageDeviceLocation(tabId, location);
     if (!check.valid) {
       await clearGeolocationOverride(tabId);
@@ -1287,7 +1290,10 @@ async function checkKeywordRanks(item, tabId, settings, runId) {
     }
 
     // 2. Build Google Search URL with pagination offset
-    const searchUrl = `https://www.${domain}/search?q=${encodeURIComponent(item.keyword)}&start=${offset}`;
+    const baseSearchUrl = `https://www.${domain}/search?q=${encodeURIComponent(item.keyword)}&start=${offset}`;
+    const searchUrl = settings?.useLocation
+      ? withClientSearchLocation(baseSearchUrl, domain, settings)
+      : baseSearchUrl;
 
     await debugLog({
       runId,

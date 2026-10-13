@@ -248,6 +248,8 @@ test('Test also reloads an existing Google tab with newly entered client coordin
   const verify = operations.findIndex(entry => entry[0] === 'Runtime.evaluate');
   assert.ok(override >= 0 && reload > override && verify > reload);
   assert.match(browser.tabsById.get(first.tabId).url, /^https:\/\/www\.google\.com\.br\/search\?/);
+  assert.match(browser.tabsById.get(first.tabId).url, /uule=a\+/);
+  assert.equal(new URL(browser.tabsById.get(first.tabId).url).searchParams.get('gl'), 'br');
 });
 
 test('invalid Google domain cannot be used for location debugger', async () => {
@@ -279,9 +281,14 @@ test('client X-Geo header is installed before Google reload, GPS applied and che
   assert.deepEqual(rules[0].condition.tabIds, [result.tabId]);
   assert.equal(new RegExp(rules[0].condition.regexFilter).test(
     'https://www.google.com/search?q=surface+repair'), true);
-  const decoded = atob(rules[0].action.requestHeaders[0].value.slice(2));
-  assert.match(decoded, /latitude_e7: 397946857/);
-  assert.match(decoded, /longitude_e7: -1050654264/);
+  assert.match(rules[0].action.requestHeaders[0].value, /^w /);
+  const preview = browser.tabsById.get(result.tabId).url;
+  assert.match(preview, /[?&]uule=a\+/);
+  assert.equal(new URL(preview).searchParams.get('pws'), '0');
+  assert.match(atob(new URL(preview).searchParams.get('uule').slice(2)),
+    /latitude_e7:397946857/);
+  assert.match(atob(new URL(preview).searchParams.get('uule').slice(2)),
+    /longitude_e7:-1050654264/);
   const actions = browser.commands.map(row => row[0]);
   assert.ok(actions.indexOf('xgeoRules') < actions.indexOf('Emulation.setGeolocationOverride'));
   assert.ok(actions.lastIndexOf('navigate') > actions.indexOf('Emulation.setGeolocationOverride'));
