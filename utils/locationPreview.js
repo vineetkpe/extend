@@ -29,10 +29,12 @@ export function isGoogleLocationTab(tab, googleDomain) {
 }
 
 /**
- * @param {{ searchTabId?: number, googleDomain: string,
- *            tabs: object, navigate: function }} options
+ * @param {{ searchTabId?: number, googleDomain: string, tabs: object }} options
+ * Return new tabs blank: the caller must install X-Geo + CDP GPS BEFORE
+ * sending the first Google Search request. Otherwise the user briefly sees
+ * their own region's results while the location override is still pending.
  */
-export async function getVisibleGoogleLocationTab({ searchTabId, googleDomain, tabs, navigate }) {
+export async function getVisibleGoogleLocationTab({ searchTabId, googleDomain, tabs }) {
   if (!supportedGoogleDomain(googleDomain)) {
     throw new Error('Unsupported Google country domain.');
   }
@@ -47,14 +49,9 @@ export async function getVisibleGoogleLocationTab({ searchTabId, googleDomain, t
       // The previous search tab was closed; use a dedicated Google tab.
     }
   }
+  // Opening a Search URL here would send an unlocalized request before the
+  // request-header rule and GPS override exist. Leave the tab blank until
+  // activateVisibleGoogleLocation configures both signals.
   const tab = await tabs.create({ url: 'about:blank', active: true });
-  try {
-    await navigate(tab.id, 'https://www.' + googleDomain +
-      '/search?q=' + encodeURIComponent('SERPTrack device location test'));
-    return { tab: await tabs.get(tab.id), created: true };
-  } catch (error) {
-    // A failed navigation must not leave an unused blank tab behind.
-    try { await tabs.remove(tab.id); } catch (_) {}
-    throw error;
-  }
+  return { tab, created: true };
 }
