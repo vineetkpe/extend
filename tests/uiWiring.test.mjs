@@ -114,6 +114,6 @@ test('successful Apply Location enables client-coordinate ranking in both screen
 
 test('client-location search URL is used on both preview and ranking pagination', () => {
   const worker = read('background.js');
-  assert.match(worker, /withClientSearchLocation\(currentTab\.url, domain, location\)/);
+  assert.match(worker, /withClientSearchLocation\(previewUrl, domain, location\)/);
   assert.match(worker, /const searchUrl = settings\?\.useLocation\s*\?\s*withClientSearchLocation\(baseSearchUrl, domain, settings\)\s*:\s*baseSearchUrl/);
 });
