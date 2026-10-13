@@ -1289,6 +1289,10 @@ function setupEventListeners() {
       });
 
       if (resp && resp.success) {
+        // START reads this switch. An applied client location must not be
+        // silently disabled for the very next Google ranking run.
+        el.useLocationToggle.checked = true;
+        if (activeProject) activeProject.config.useLocation = true;
         showToast(resp.message || 'Location configured successfully.', 'success');
         await syncBackgroundState();
       } else {
