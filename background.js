@@ -188,22 +188,25 @@ async function activateVisibleGoogleLocation(location, domain, state) {
   const opened = await getVisibleGoogleLocationTab({
     searchTabId: state.searchTabId,
     googleDomain: domain,
-    tabs: chrome.tabs,
-    navigate: navigateAndWaitForTab
+    tabs: chrome.tabs
   });
   const tabId = opened.tab.id;
   try {
+    // Apply the request-location header and browser GPS while a new tab is
+    // still about:blank. Its FIRST Google Search request must already use
+    // the client's location; no unlocalized test SERP should flash first.
     await applyGeolocationOverride(tabId, location, domain);
-    // A newly opened Google Search tab was loaded before the CDP override.
-    // Reload the SAME search URL under the requested device coordinates,
-    // then verify geolocation on the resulting document, not the old page.
     const currentTab = await chrome.tabs.get(tabId);
-    if (!isGoogleLocationTab(currentTab, domain)) {
+    if (!opened.created && !isGoogleLocationTab(currentTab, domain)) {
       throw new Error('Google tab left the expected Search results page.');
     }
-    // Send location with the Google Search URL too, rather than relying on
-    // GPS alone (or a stale UULE cookie from the user's original location).
-    const localizedUrl = withClientSearchLocation(currentTab.url, domain, location);
+    // Keep an existing Search query, or use the fixed preview query for a
+    // newly created blank tab. Never include private client keywords here.
+    const previewUrl = opened.created
+      ? 'https://www.' + domain + '/search?q=' +
+        encodeURIComponent('SERPTrack device location test')
+      : currentTab.url;
+    const localizedUrl = withClientSearchLocation(previewUrl, domain, location);
     await navigateAndWaitForTab(tabId, localizedUrl);
     const check = await verifyPageDeviceLocation(tabId, location);
     if (!check.valid) {
