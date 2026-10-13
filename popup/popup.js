@@ -1101,6 +1101,10 @@ function attachEventListeners() {
         return;
       }
       if (resp && resp.success) {
+        // Apply Location is an explicit request to use these client
+        // coordinates for the next rank check, not merely a GPS preview.
+        if (useLocationCheckbox) useLocationCheckbox.checked = true;
+        if (activeProject) activeProject.config.useLocation = true;
         showLocationMessage(resp.message || 'Location configured successfully.', true);
         renderLocationStatus(true, validation, false, true);
       } else {
